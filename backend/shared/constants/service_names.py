@@ -1,5 +1,6 @@
 API_GATEWAY = "api-gateway"
 GEO_AGENT = "geo-agent"
+GRAPH_AGENT = "graph-agent"
 VELOCITY_AGENT = "velocity-agent"
 BEHAVIOR_AGENT = "behavior-agent"
 SYNTHESIS_AGENT = "synthesis-agent"

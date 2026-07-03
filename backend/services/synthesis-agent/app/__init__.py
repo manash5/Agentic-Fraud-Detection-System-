@@ -1,1 +1,0 @@
-"""Synthesis Agent application package."""

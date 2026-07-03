@@ -28,7 +28,7 @@ from agents.geo_agent import (
 )
 from agents.velocity_agent import RedisUnavailableError
 from feature_engineering.config import load_config
-from feature_engineering.geo_features import haversine_km
+from feature_engineering.geo_math import haversine_km
 
 CFG = load_config()
 ACFG = CFG["geo_agent"]

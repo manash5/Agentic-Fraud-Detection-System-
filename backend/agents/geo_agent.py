@@ -46,7 +46,7 @@ from redis.retry import Retry
 
 from agents.velocity_agent import RedisUnavailableError  # canonical, shared
 from feature_engineering.config import load_config
-from feature_engineering.geo_features import haversine_km
+from feature_engineering.geo_math import haversine_km
 
 logger = logging.getLogger(__name__)
 
