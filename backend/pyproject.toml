@@ -26,6 +26,8 @@ dependencies = [
     "psutil>=7.2.2",
     "tqdm>=4.68.2",
     "lightgbm>=4.6.0",
+    "pyyaml>=6.0.3",
+    "asyncpg>=0.31.0",
 ]
 
 [dependency-groups]

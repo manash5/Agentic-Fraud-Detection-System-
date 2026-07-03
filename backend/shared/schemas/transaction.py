@@ -9,6 +9,9 @@ class TransactionEvent(BaseModel):
     amount: float
     currency: str = "NPR"
     timestamp: datetime
+    txn_type: str | None = Field(
+        default=None, description="Declared transaction type (e.g. p2p, qr, pos)."
+    )
     merchant_id: str | None = None
     device_id: str | None = None
     ip_address: str | None = None
