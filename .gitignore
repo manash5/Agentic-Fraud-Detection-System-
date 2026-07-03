@@ -316,3 +316,10 @@ export/
 # Notebook outputs (optional - keep if you want version control)
 *.nbsvg
 *.nbconvert.ipynb
+
+# Frontend source dirs that collide with the Python ignore patterns above
+# (e.g. `lib/`, `build/`). These are TypeScript source, not build artifacts.
+!frontend/lib/
+!frontend/lib/**
+!frontend/build/
+!frontend/build/**

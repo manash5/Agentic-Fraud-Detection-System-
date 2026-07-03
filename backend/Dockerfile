@@ -15,6 +15,8 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
 
 COPY shared ./shared
+COPY agents ./agents
+COPY feature_engineering ./feature_engineering
 COPY services ./services
 COPY run_service.py .
 

@@ -1,141 +1,81 @@
 # Geo Agent
 
-The Geo Agent implements the paper's §IV-C-2 geographic risk layer as a FastAPI microservice. It evaluates location feasibility, anonymizing network signals, device fingerprint risk, and Neo4j account graph proximity to known fraud rings such as COMM-042.
+FastAPI microservice for the paper's §IV-C-2 Geo Agent, **Phase 1**: travel
+feasibility + device fingerprint novelty, backed by `agents/geo_agent.py`.
+Redis-first hot path with an asyncpg fallback on cache miss; well under the
+paper's 20–50 ms Geo Agent budget (~1–2 ms warm).
 
-## Risk Rules
+**Deliberately absent (not stubbed):** shared-IP, circular-flow and
+fraud-ring graph checks. Those belong to a future Graph Agent built from
+`account_graph_nodes.csv` / `account_graph_edges.csv` — this agent's risk
+aggregation simply does not include them. No Neo4j anywhere in this service.
 
-The final risk score is the sum of rule contributions capped at `1.0`.
+## Data sources — what touches what
 
-| Rule | Threshold | Risk |
-|---|---:|---:|
-| Impossible travel | `impossible_travel = true`, indicating speed above 900 km/h | `+0.50` |
-| New device | Current `device_id` has not previously appeared for the account | `+0.25` |
-| Unknown device fingerprint | `device_id` is missing from `device_fingerprints` | `+0.10` |
-| Rooted device + locale mismatch | `is_rooted_or_jailbroken = true`, `locale = en_US`, and `ip_country = Nepal` | `+0.40` |
-| VPN/Tor | VPN adds `+0.20`; Tor adds `+0.30` and takes precedence if both are present | up to `+0.30` |
-| Datacenter IP | `is_datacenter = true` | `+0.15` |
-| Shared IP graph proximity | Additional account neighbor found in Neo4j | up to `+0.20` |
-| Circular money flow | A 1-3 hop account cycle is detected | `+0.25` |
-| Fraud ring proximity | 1 hop from fraud seed `+0.35`, 2 hops `+0.25`, 3 hops `+0.10`, 4+ or none `+0.0` | up to `+0.35` |
+| Path | Storage | When |
+|---|---|---|
+| Last-known location | Redis `geo:last:{account_id}` (24h TTL), read **before** being overwritten | Every request |
+| Known devices | Redis `devices:known:{account_id}` SET (90d TTL), learned on every request | Every request |
+| Location fallback | Postgres `geo_events` (by `account_id` — the column exists; the brief's "Option A vs B" blocker did not apply to this schema) | Redis miss only |
+| Device metadata | Postgres `device_fingerprints` (198,803 rows, loaded by `scripts/load_device_fingerprints.py`) | Unknown devices only |
+| Confidence | Redis `account_baseline:{account_id}` `n_geo_90d` → `geo:obs:` cache → Postgres COUNT | Baseline miss only |
 
-Confidence is `0.95` when geo, device, country, and device id data are present; `0.75` when one is missing; and `0.50` when multiple fields are missing or this appears to be the account's first transaction. Impossible travel boosts confidence to `0.98`. Neo4j degradation caps confidence at `0.60`.
+Redis or Postgres unreachable → **503**, never a made-up score.
 
-## Neo4j Queries
+## The two signals
 
-Shared IP accounts:
+- **travel_feasibility** — haversine distance from last known location ÷
+  elapsed time vs `max_plausible_kmh` (900, matching the batch
+  `impossible_travel` definition). Gradient, not a boolean: 0 at ≤450 km/h,
+  0.5 exactly at 900, 1.0 at ≥1350. Sub-50 km hops are treated as
+  IP-geolocation jitter.
+- **device_novelty** — 0 for known devices; 0.6 base for a device new to the
+  account (0.2 if it's the account's first-ever device), pushed higher by
+  rooted/jailbroken (+0.2), shared device (+0.1), seen on ≥3 accounts (+0.1).
 
-```cypher
-MATCH (a:Account {id: $account_id})-[*1..1]-(other:Account)
-WHERE other.id <> $account_id
-RETURN count(distinct other) as shared_account_count
-```
+Risk = 50/50 weighted sum — the paper doesn't specify the Geo Agent's
+internal sub-weights; this default is documented in `feature_config.yaml`
+(`geo_agent:` section) along with every other threshold.
 
-Circular flow:
+## Run locally
 
-```cypher
-MATCH (a:Account {id: $account_id})-[*1..3]-(b:Account {id: $account_id})
-RETURN count(*) > 0 as has_circular_flow
-```
-
-Fraud ring proximity:
-
-```cypher
-MATCH (a:Account {id: $account_id}), (fraud:Account {is_fraud_seed: true})
-MATCH p = shortestPath((a)-[*1..4]-(fraud))
-RETURN fraud.id as fraud_node, length(p) as distance
-ORDER BY distance ASC LIMIT 1
-```
-
-## Run
-
-The service reads `DATABASE_URL`, `NEO4J_URI`, `NEO4J_USERNAME`, and `NEO4J_PASSWORD` from `backend/.env`.
+From `backend/`:
 
 ```bash
-cd backend/services/geo-agent
-uvicorn app.main:app --reload --port 8002
+uv run uvicorn app.main:app --reload --port 8002 --app-dir services/geo-agent
 ```
 
-Health check:
-
-```bash
-curl http://localhost:8002/health
-```
-
-Evaluate a transaction:
+## Endpoint
 
 ```bash
 curl -X POST http://localhost:8002/evaluate \
   -H "Content-Type: application/json" \
-  -d '{"txn_id": "TXN-20260101-00000001", "account_id": "ACC-0000001"}'
+  -d '{
+    "txn_id": "TXN-1",
+    "account_id": "ACC-1000159",
+    "device_id": "DEV-565127",
+    "latitude": 55.7558,
+    "longitude": 37.6173,
+    "timestamp": "2026-05-01T15:30:00Z"
+  }'
 ```
-
-Example response:
 
 ```json
 {
-  "txn_id": "TXN-20260101-00000001",
-  "risk_score": 0.35,
-  "confidence": 0.95,
-  "breakdown": {
-    "impossible_travel_risk": 0.0,
-    "new_device_risk": 0.0,
-    "rooted_locale_mismatch_risk": 0.0,
-    "vpn_tor_risk": 0.0,
-    "datacenter_risk": 0.0,
-    "shared_ip_risk": 0.0,
-    "circular_flow_risk": 0.0,
-    "fraud_ring_proximity_risk": 0.35
-  },
-  "fraud_ring_details": {
-    "is_near_fraud_seed": true,
-    "nearest_fraud_node_distance_hops": 1,
-    "nearest_fraud_node_id": "ACC-0011204"
-  },
-  "latency_ms": 58
+  "txn_id": "TXN-1",
+  "agent_name": "geo-agent",
+  "risk_score": 1.0,
+  "confidence_score": 0.1,
+  "signals": {"travel_feasibility": 1.0, "device_novelty": 1.0},
+  "latency_ms": 1.861
 }
-```
-
-## COMM-042 Testing
-
-The Neo4j loader expects COMM-042 metadata at `backend/datasets/comm042_ring_members.json` and marks the collector plus ring members with `is_fraud_seed = true` and `community_id = "COMM-042"`.
-
-To test manually, pick an account id from that JSON file's `ring_members` list or its `collector_account`, then call:
-
-```bash
-curl -X POST http://localhost:8002/evaluate \
-  -H "Content-Type: application/json" \
-  -d '{"txn_id": "TXN-20260101-00000001", "account_id": "ACC-COMM042-001"}'
-```
-
-If the graph has a shortest path to a fraud seed within three hops, the `fraud_ring_proximity_risk` field will be non-zero and `fraud_ring_details.is_near_fraud_seed` will be `true`.
-
-## Single Backend API
-
-When the full backend stack is running, the API Gateway exposes Geo and Velocity through one backend port:
-
-```bash
-cd backend
-docker compose up --build api-gateway
-```
-
-Call Geo through the gateway:
-
-```bash
-curl -X POST http://localhost:8000/evaluate/geo \
-  -H "Content-Type: application/json" \
-  -d '{"txn_id": "TXN-20260101-00000001", "account_id": "ACC-0000001"}'
-```
-
-Call Velocity and Geo together:
-
-```bash
-curl -X POST http://localhost:8000/evaluate/both \
-  -H "Content-Type: application/json" \
-  -d '{"txn_id": "TXN-20260101-00000001", "account_id": "ACC-0000001"}'
 ```
 
 ## Tests
 
+From `backend/`:
+
 ```bash
-pytest backend/services/geo-agent/tests/
+uv run pytest services/geo-agent/tests   # endpoint tests
+uv run pytest tests/test_geo_agent.py    # signals, fallback, concurrent load
 ```

@@ -57,28 +57,45 @@ async def test_health(service: str, expected: str) -> None:
 @pytest.mark.asyncio
 async def test_geo_evaluate() -> None:
     app = _app("geo-agent")
+    # Swap in in-memory fakes so the test needs no live Redis/Postgres.
+    from agents.geo_agent import GeoAgent
+    from tests.test_geo_agent import FakeAsyncRedis, FakePgPool
+
+    sys.modules["app.main"].agent = GeoAgent(
+        redis_client=FakeAsyncRedis(), pg_pool=FakePgPool()
+    )
     transport = ASGITransport(app=app)
     payload = {
-        "transaction_id": "txn-001",
-        "distance_from_home_km": 120.0,
-        "is_new_location": True,
-        "ring_proximity_score": 0.2,
+        "txn_id": "txn-001",
+        "account_id": "ACC-1",
+        "device_id": "DEV-1",
+        "latitude": 27.7172,
+        "longitude": 85.3240,
     }
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        response = await client.post("/evaluate/risk", json=payload)
+        response = await client.post("/evaluate", json=payload)
     assert response.status_code == 200
-    assert 0.0 <= response.json()["risk_score"] <= 1.0
+    body = response.json()
+    assert 0.0 <= body["risk_score"] <= 1.0
+    assert body["confidence_score"] == 0.0  # unseen account: cold start
 
 
 @pytest.mark.asyncio
 async def test_velocity_evaluate() -> None:
     app = _app("velocity-agent")
+    # Swap in the in-memory fake so the test needs no live Redis.
+    from agents.velocity_agent import VelocityAgent
+    from tests.test_velocity_agent import FakeRedis
+
+    sys.modules["app.main"].agent = VelocityAgent(client=FakeRedis())
     transport = ASGITransport(app=app)
-    payload = {"transaction_id": "txn-002", "txn_count_1h": 8, "txn_count_24h": 12, "amount": 75000.0}
+    payload = {"txn_id": "txn-002", "account_id": "ACC-1", "amount_npr": 75000.0, "txn_type": "ESEWA_P2P"}
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        response = await client.post("/evaluate/risk", json=payload)
+        response = await client.post("/evaluate", json=payload)
     assert response.status_code == 200
-    assert response.json()["risk_score"] > 0.0
+    body = response.json()
+    assert 0.0 <= body["risk_score"] <= 1.0
+    assert body["confidence"] == 0.0  # unseen account: cold-start confidence
 
 
 @pytest.mark.asyncio

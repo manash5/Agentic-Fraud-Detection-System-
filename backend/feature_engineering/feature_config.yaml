@@ -1,0 +1,230 @@
+# Feature engineering configuration — Velocity & Geo agents.
+# Every tunable threshold lives here; code must not contain magic numbers.
+# The sha256 of this file (first 12 hex chars) is logged to
+# feature_pipeline_runs.feature_config_version on every table write.
+
+database:
+  # psycopg2 DSN; override with env var FRAUD_DB_DSN
+  dsn: "dbname=fraud_detection_global"
+
+redis:
+  host: "localhost"          # override with env var FRAUD_REDIS_HOST
+  port: 6379                 # override with env var FRAUD_REDIS_PORT
+  socket_timeout_s: 0.25     # hot path must fail fast so the Postgres fallback stays inside the latency budget
+  # Async clients (geo agent): cap the connection pool and BLOCK when it is
+  # full — redis-py's default async pool raises "Too many connections" under
+  # request bursts instead of queueing.
+  max_connections: 50
+  key_prefixes:
+    velocity: "velocity:"            # sorted set: score=epoch_ms, member=txn_id
+    velocity_amount: "velocity_amt:" # sorted set: score=epoch_ms, member="{amount}:{txn_id}"
+    baseline: "account_baseline:"    # hash: avg / std / n_txn_30d / avg_km_home / std_km_home / baseline_date
+  ttl:
+    # Slightly longer than the longest sliding window (7d) so idle accounts self-clean.
+    velocity_keys_s: 691200          # 8 days
+    # Baseline is refreshed nightly; 26h TTL covers a late-running job without going stale for long.
+    baseline_s: 93600                # 26 hours
+  # Every key we write carries a TTL, so evict only expirable keys under memory pressure.
+  recommended_maxmemory_policy: "volatile-ttl"
+
+transaction:
+  # Core per-transaction features derived from transactions_raw (§3).
+  home_currency: "NPR"                 # currency != home_currency => currency_is_foreign=1
+  # ISO-8583 response codes counted as a successful/approved transaction; every
+  # other code ('05' do-not-honour, '51' insufficient funds, '57' not-permitted)
+  # is a decline. Empirically '00' is the only success code in this dataset.
+  success_response_codes: ["00"]
+  # pandas dayofweek: Mon=0 ... Sat=5, Sun=6. Empirically the dataset's
+  # weekend_flag agrees 100% with {Sat, Sun}, so weekend = {5, 6}.
+  weekend_days: [5, 6]
+  # Data-quality cross-check: timestamp-derived weekend/night vs the flags stored
+  # in velocity_snapshots. Warn (once per batch) when the disagreement RATE
+  # exceeds the tolerance. Measured: weekend 100% agree, night ~95.7% agree
+  # (~4.3% timezone noise) — night intentionally trips the warning at 0.02.
+  flag_crosscheck:
+    weekend_tolerance: 0.01
+    night_tolerance: 0.02
+
+velocity:
+  # Sliding windows, seconds. Counts INCLUDE the current transaction
+  # (Redis path ZADDs the event before ZCOUNT; the batch SQL uses
+  # RANGE ... AND CURRENT ROW to match).
+  windows_s:
+    txn_count_1m: 60
+    txn_count_5m: 300
+    txn_count_15m: 900
+    txn_count_1h: 3600
+    txn_count_24h: 86400
+    txn_count_7d: 604800
+  amount_windows_s:
+    total_amount_1h_npr: 3600
+    total_amount_24h_npr: 86400
+  baseline_window_days: 30           # trailing window for avg/std amount (excludes current txn)
+  epsilon: 0.001                     # divide-by-zero guard in velocity_acceleration
+  amount_deviation_clip: 50.0        # amount_deviation_ratio capped here (p99.9 of ratio is far below)
+  # Just-under-reporting-threshold amounts (NPR). Continuous distance, not a cutoff.
+  structuring_thresholds_npr: [9999, 49999, 99999]
+  structuring_proximity_cap_npr: 50000   # beyond this the distance carries no structuring signal
+  night_hours: {start: 22, end: 6}   # inclusive start, exclusive end (22:00–05:59 local)
+  cold_start:
+    min_prior_txns_30d: 5            # fewer prior txns than this => is_cold_start=1
+    std_floor_npr: 1.0               # std below floor => z-score forced to 0 and cold start flagged
+  z_score_clip: 10.0
+
+velocity_agent:
+  # Paper §IV-C-1 Velocity Agent (agents/velocity_agent.py) — Redis-only hot
+  # path, 1-2 ms budget. Scoped to that module; the `velocity:` section above
+  # belongs to the batch feature-engineering layer and is a different design.
+  key_prefixes:
+    user: "user:"                    # user:{account_id}:count_2min / :count_1hr (sorted sets)
+    baseline: "account_baseline:"    # shared hash; hist_* fields written by nightly_baseline_job
+    type_dist: "user_type_dist:"     # hash: txn_type -> share of the account's 30d history
+  windows_s:
+    count_2min: 120
+    count_1hr: 3600
+  key_ttl_slack_s: 600               # EXPIRE = window + slack (1hr key -> 70 min, per the paper)
+  type_dist_ttl_s: 86400             # 24h, refreshed with the nightly baseline job
+  confidence:
+    observation_threshold: 50        # paper: below this, confidence ramps down (smooth, not a step)
+  txn_count:
+    # score = clip(((live - hist_mean) / (hist_mean + 1)) / saturation_ratio).
+    # The +1 keeps the near-zero historical means typical of 2-min windows
+    # from exploding the ratio; saturation_ratio=10 means ~11 txns in a
+    # 2-min window against a ~0 mean saturates to 1.0.
+    saturation_ratio: 10.0
+  amount:
+    min_avg_npr: 1.0                 # hist_amount_avg below this = cold start, not a divide-by-zero
+    cold_start_score: 0.5            # neutral: nothing to deviate from yet
+    ratio_saturation: 10.0           # amount >= 10x baseline avg => signal-2 score 1.0
+  spike:
+    multiplier: 5.0                  # the paper's explicit >=5x trigger (signal 3)
+    base_score: 0.7                  # score jumps here AT exactly 5x ...
+    full_score_multiplier: 15.0      # ... then ramps linearly to 1.0 at 15x
+  balance_integrity:
+    # Signal 4 is stubbed (no balance columns in transactions_raw); this knob
+    # only takes effect once balance_before/balance_after are wired in.
+    mismatch_full_score_ratio: 0.10  # |(before-after) - amount| / amount >= 10% => score 1.0
+  type_mismatch:
+    common_share: 0.2                # type share >= 20% of history reads as fully normal (score 0)
+    cold_start_score: 0.5            # no type history yet: neutral, per spec
+  # Aggregation weights, renormalized over the signals that produced a score
+  # (balance_integrity is excluded while stubbed). The paper does NOT fix
+  # intra-agent weights (only the Synthesis Agent's Table I), so this split
+  # is our judgment call: the >=5x spike gets the most weight as the
+  # sharpest single fraud indicator, count bursts next, and the smoother
+  # amount ratio and type rarity act as corroborating signals.
+  weights:
+    amount_spike: 0.35
+    txn_count: 0.30
+    amount_vs_baseline: 0.20
+    txn_type_mismatch: 0.15
+    balance_integrity: 0.0           # pending a balance data source
+
+geo_agent:
+  # Paper §IV-C-2 Geo Agent, Phase 1 only (agents/geo_agent.py): travel
+  # feasibility + device novelty. Graph checks (shared IP, circular flow,
+  # fraud rings) belong to a future Graph Agent built from the account_graph
+  # CSVs and are deliberately absent — not stubbed — from this agent.
+  key_prefixes:
+    last_location: "geo:last:"       # HASH {lat, lon, ts_epoch_ms, device_id}
+    known_devices: "devices:known:"  # SET of device_ids seen on the account
+    baseline: "account_baseline:"    # nightly hash; n_geo_90d feeds confidence
+    observation_count: "geo:obs:"    # STRING cache of the Postgres COUNT for accounts with no baseline yet
+  ttl:
+    last_location_s: 86400           # 24h
+    known_devices_s: 7776000         # 90d
+    observation_count_s: 3600        # 1h — keeps cold-account confidence PG-free between nightly runs
+  confidence:
+    observation_threshold: 20        # prior geo_events; independent knob from the Velocity Agent's 50
+  travel:
+    # Matches geo.impossible_speed_kmh below (the batch impossible_travel flag).
+    max_plausible_kmh: 900.0
+    # Gradient, not a boolean: score rises from 0 at start_ratio x threshold
+    # to 1 at full_ratio x threshold (0.5 exactly AT the threshold).
+    gradient_start_ratio: 0.5
+    gradient_full_ratio: 1.5
+    min_km: 50.0                     # below this, IP-geolocation jitter carries no travel signal
+    min_time_delta_s: 30.0           # real distance in under this (or out-of-order ts) = teleport, max score
+  device:
+    unknown_device_score: 0.6        # device novel to this account (but account has known devices)
+    first_device_score: 0.2          # account's first-ever device: neutral-low, not risky
+    # Fingerprint enrichment (device_fingerprints table), applied on top of
+    # the novelty base for devices NOT already known to the account:
+    rooted_bonus: 0.20
+    shared_bonus: 0.10
+    multi_account_bonus: 0.10
+    multi_account_min: 3             # num_accounts_seen_on_device >= this
+  # 50/50 split between the two Phase 1 signals. The paper does not specify
+  # the Geo Agent's internal sub-weights (only the Synthesis Agent's Table I),
+  # so this is a default judgment call — revisit when graph signals land.
+  weights:
+    travel_feasibility: 0.5
+    device_novelty: 0.5
+
+geo:
+  # A txn is "impossible travel" only if BOTH hold — the km floor suppresses
+  # false flags from IP-geolocation jitter over short hops.
+  impossible_speed_kmh: 900.0        # ~commercial-flight cruise; ground travel in Nepal is far slower
+  impossible_min_km: 50.0
+  implied_speed_clip_kmh: 3000.0     # numeric stability only; the recomputed flag keeps the signal
+  min_time_delta_min: 0.5            # deltas below this make speed meaningless (same-session events)
+  distance_baseline_window_days: 90  # km_from_home needs more history than amounts to be stable
+  distance_z_clip: 10.0
+  distance_std_floor_km: 1.0         # guards the z denominator for accounts that never move
+  min_prior_events: 5                # fewer prior geo events => fall back to the global (train) distribution
+  prev_txn_km_cap: 20000.0           # half Earth circumference; sanity cap on recomputed haversine
+  # geo_risk_composite weights (sum to 1.0). Rationale:
+  #   tor        0.40 — rare (<1% of traffic) and almost never legitimate for banking
+  #   impossible 0.30 — physically contradictory location evidence (recomputed flag, not the raw one)
+  #   datacenter 0.15 — hosting-range IPs: automation/proxying, some legit corporate NAT
+  #   vpn        0.15 — weakest single signal; privacy VPNs are common among legitimate users
+  risk_weights:
+    is_tor: 0.40
+    impossible_travel: 0.30
+    is_datacenter: 0.15
+    is_vpn: 0.15
+  home_country: "Nepal"              # ip_country != home_country => is_foreign_ip=1
+  isp_encoding:
+    # Frequency encoding (share of training txns). Target encoding is ruled
+    # out by the leakage policy: no feature may touch is_fraud.
+    unseen_value: 0.0                # unseen ISP at inference reads as "never seen" = maximally rare
+
+encoding:
+  # Low-cardinality one-hots learned at fit time; unseen level at inference
+  # => all-zeros row (explicitly handled, never an error).
+  one_hot_columns: [channel, auth_method]
+
+outliers:
+  # Winsorization percentiles learned on TRAINING data at fit() time.
+  # Generous caps: for fraud, extremes are signal — capping is for numeric
+  # stability, and the flags/z-scores retain the anomaly information.
+  amount_winsor_pct: 0.995           # empirically ~4.58M NPR (max 5M): tames the tail without erasing it
+  distance_winsor_pct: 0.999         # legit p99.9 ~124 km; the handful of 7000+ km rows are true anomalies
+
+split:
+  # TIME-based split — never random. Drift between these periods is expected.
+  train_start: "2025-01-01"
+  train_end: "2026-01-31"            # fit() must only ever see rows in [train_start, train_end]
+  validation_start: "2026-02-01"
+  validation_end: "2026-05-31"
+
+drift:
+  # transform-time stats are compared to fit-time stats; warn beyond these.
+  mean_shift_stds: 3.0               # |mean_t - mean_fit| > k * std_fit
+  null_rate_delta: 0.05
+  min_rows: 100                      # below this, batch stats are noise (e.g. single-txn scoring)
+
+validation:
+  latency_budget_p95_ms: 800
+  correlation_flag_threshold: 0.9
+  sample_rows: 20
+
+pipeline:
+  batch_chunk_rows: 250000
+  fit_sample_rows: 500000   # uniform sample of the training window used for fit-time quantiles/stats
+  tables:
+    transaction: transaction_features_engineered
+    velocity: velocity_features_engineered
+    geo: geo_features_engineered
+    baseline: account_baseline_daily
+    runs: feature_pipeline_runs

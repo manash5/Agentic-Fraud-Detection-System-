@@ -35,11 +35,18 @@ app.include_router(health_router(API_GATEWAY))
 class EvaluateRequest(BaseModel):
     txn_id: str = Field(..., min_length=1)
     account_id: str = Field(..., min_length=1)
+    # The velocity and geo agents evaluate the live event (Redis-first hot
+    # paths), so the event data must ride in the payload — they no longer
+    # look the transaction up in a database.
+    amount_npr: float | None = Field(default=None, gt=0)
+    txn_type: str | None = None
+    timestamp: str | None = None
+    device_id: str | None = None
+    latitude: float | None = None
+    longitude: float | None = None
 
 
-class EvaluateAllRequest(BaseModel):
-    txn_id: str = Field(..., min_length=1)
-    account_id: str = Field(..., min_length=1)
+class EvaluateAllRequest(EvaluateRequest):
     transaction_type: str = Field(
         "p2p_transfer",
         description="p2p_transfer | merchant_payment | atm_withdrawal | bill_payment",
@@ -70,12 +77,12 @@ class OTPVerifyRequest(BaseModel):
 
 @app.post("/evaluate/velocity")
 def evaluate_velocity(body: EvaluateRequest) -> dict[str, Any]:
-    return _post_agent(f"{VELOCITY_AGENT_URL}/evaluate", body.model_dump())
+    return _post_agent(f"{VELOCITY_AGENT_URL}/evaluate", _velocity_payload(body))
 
 
 @app.post("/evaluate/geo")
 def evaluate_geo(body: EvaluateRequest) -> dict[str, Any]:
-    return _post_agent(f"{GEO_AGENT_URL}/evaluate", body.model_dump())
+    return _post_agent(f"{GEO_AGENT_URL}/evaluate", _geo_payload(body))
 
 
 @app.post("/evaluate/behavior")
@@ -117,8 +124,8 @@ def evaluate_all(body: EvaluateAllRequest) -> dict[str, Any]:
     started = time.perf_counter()
     agent_payload = {"txn_id": body.txn_id, "account_id": body.account_id}
 
-    velocity = _post_agent(f"{VELOCITY_AGENT_URL}/evaluate", agent_payload)
-    geo = _post_agent(f"{GEO_AGENT_URL}/evaluate", agent_payload)
+    velocity = _post_agent(f"{VELOCITY_AGENT_URL}/evaluate", _velocity_payload(body))
+    geo = _post_agent(f"{GEO_AGENT_URL}/evaluate", _geo_payload(body))
     behavior = _post_agent(f"{BEHAVIOR_AGENT_URL}/evaluate", agent_payload)
 
     synthesis = _post_agent(
@@ -155,9 +162,9 @@ def evaluate_all(body: EvaluateAllRequest) -> dict[str, Any]:
 @app.post("/evaluate/both")
 def evaluate_both(body: EvaluateRequest) -> dict[str, Any]:
     started = time.perf_counter()
-    payload = body.model_dump()
-    velocity = _post_agent(f"{VELOCITY_AGENT_URL}/evaluate", payload)
-    geo = _post_agent(f"{GEO_AGENT_URL}/evaluate", payload)
+    payload = {"txn_id": body.txn_id, "account_id": body.account_id}
+    velocity = _post_agent(f"{VELOCITY_AGENT_URL}/evaluate", _velocity_payload(body))
+    geo = _post_agent(f"{GEO_AGENT_URL}/evaluate", _geo_payload(body))
     return {
         "txn_id": body.txn_id,
         "account_id": body.account_id,
@@ -170,12 +177,53 @@ def evaluate_both(body: EvaluateRequest) -> dict[str, Any]:
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _velocity_payload(body: EvaluateRequest) -> dict[str, Any]:
+    """Velocity agent payload; the event amount is mandatory for it."""
+    if body.amount_npr is None:
+        raise HTTPException(
+            status_code=422,
+            detail="amount_npr is required: the velocity agent scores the live "
+            "event from the payload (Redis-only), it does not look up "
+            "transactions in a database.",
+        )
+    payload = {
+        "txn_id": body.txn_id,
+        "account_id": body.account_id,
+        "amount_npr": body.amount_npr,
+        "txn_type": body.txn_type,
+        "timestamp": body.timestamp,
+    }
+    return {k: v for k, v in payload.items() if v is not None}
+
+
+def _geo_payload(body: EvaluateRequest) -> dict[str, Any]:
+    """Geo agent payload; the event's device and coordinates are mandatory."""
+    missing = [f for f in ("device_id", "latitude", "longitude") if getattr(body, f) is None]
+    if missing:
+        raise HTTPException(
+            status_code=422,
+            detail=f"{', '.join(missing)} required: the geo agent scores the live "
+            "event from the payload (Redis-first), it does not look up "
+            "transactions in a database.",
+        )
+    payload = {
+        "txn_id": body.txn_id,
+        "account_id": body.account_id,
+        "device_id": body.device_id,
+        "latitude": body.latitude,
+        "longitude": body.longitude,
+        "timestamp": body.timestamp,
+    }
+    return {k: v for k, v in payload.items() if v is not None}
+
+
 def _to_verdict(agent_response: dict[str, Any]) -> dict[str, Any]:
     """Extract the AgentVerdict fields that synthesis-agent expects."""
     return {
         "risk_score": agent_response.get("risk_score", 0.0),
         "confidence": agent_response.get("confidence", agent_response.get("confidence_score", 0.5)),
-        "latency_ms": agent_response.get("latency_ms", 0),
+        # AgentVerdict.latency_ms is an int; the geo agent reports float ms.
+        "latency_ms": int(agent_response.get("latency_ms", 0)),
     }
 
 

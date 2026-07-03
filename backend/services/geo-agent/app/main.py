@@ -1,142 +1,113 @@
+"""Geo Agent microservice — one endpoint over the paper §IV-C-2 Phase 1 agent.
+
+Signals: travel feasibility + device fingerprint novelty. Redis-first hot
+path with an asyncpg fallback on cache miss; no Neo4j (graph checks belong
+to a future Graph Agent and are excluded, not stubbed). If Redis or
+Postgres cannot answer, the endpoint returns 503 rather than a made-up
+score — the fallback policy belongs to the orchestration layer.
+"""
+
 from __future__ import annotations
 
 import logging
 import os
+import sys
 import time
-import traceback
+from datetime import datetime, timezone
 from pathlib import Path
 
-from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
-from neo4j import GraphDatabase
-from neo4j.exceptions import Neo4jError
 from pydantic import BaseModel, Field
-from sqlalchemy import create_engine, text
-from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.pool import QueuePool
 
-from app.geo_check import TransactionNotFoundError, evaluate_geo
+BACKEND_DIR = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(BACKEND_DIR))  # agents/, feature_engineering/, shared/
 
+# docker-compose exports REDIS_HOST; feature_config reads FRAUD_REDIS_HOST.
+if "REDIS_HOST" in os.environ:
+    os.environ.setdefault("FRAUD_REDIS_HOST", os.environ["REDIS_HOST"])
+
+from agents.geo_agent import GeoAgent, PostgresUnavailableError
+from agents.velocity_agent import RedisUnavailableError
+from shared.constants.service_names import GEO_AGENT
+from shared.routers.health import health_router
 
 logger = logging.getLogger("geo-agent")
 logging.basicConfig(level=logging.INFO)
 
-BACKEND_DIR = Path(__file__).resolve().parents[3]
-load_dotenv(BACKEND_DIR / ".env")
-
-DATABASE_URL = os.environ.get("DATABASE_URL")
-NEO4J_URI = os.environ.get("NEO4J_URI")
-NEO4J_USERNAME = os.environ.get("NEO4J_USERNAME")
-NEO4J_PASSWORD = os.environ.get("NEO4J_PASSWORD")
-NEO4J_DATABASE = os.environ.get("NEO4J_DATABASE") or None
-
-engine = (
-    create_engine(
-        DATABASE_URL,
-        poolclass=QueuePool,
-        pool_pre_ping=True,
-        pool_size=5,
-        max_overflow=10,
-    )
-    if DATABASE_URL
-    else None
-)
-
-neo4j_driver = (
-    GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USERNAME, NEO4J_PASSWORD))
-    if NEO4J_URI and NEO4J_USERNAME and NEO4J_PASSWORD
-    else None
-)
-
 app = FastAPI(
     title="Geo Agent",
-    version="0.1.0",
-    description="Geographic, device, and graph-context fraud risk microservice.",
+    version="0.2.0",
+    description="Paper §IV-C-2 geo risk agent, Phase 1: travel feasibility + device novelty.",
 )
+app.include_router(health_router(GEO_AGENT))
+
+agent = GeoAgent()
+
+
+@app.on_event("startup")
+async def startup() -> None:
+    try:
+        await agent.connect()
+        logger.info("✅ Geo Agent connected (Redis + asyncpg pool)")
+    except Exception as exc:  # startup must not crash; /evaluate reports 503
+        logger.warning("Geo Agent could not connect at startup: %s", exc)
+
+
+@app.on_event("shutdown")
+async def shutdown() -> None:
+    await agent.close()
 
 
 class GeoEvaluateRequest(BaseModel):
     txn_id: str = Field(..., min_length=1)
     account_id: str = Field(..., min_length=1)
-
-
-@app.on_event("startup")
-def startup_check_connections() -> None:
-    app.state.db_available = False
-    app.state.neo4j_available = False
-
-    if engine is None:
-        logger.error("DATABASE_URL is not configured")
-    else:
-        try:
-            with engine.connect() as connection:
-                connection.execute(text("SELECT 1"))
-            app.state.db_available = True
-        except Exception:
-            logger.error("Geo Agent failed to connect to Postgres:\n%s", traceback.format_exc())
-
-    if neo4j_driver is None:
-        logger.error("Neo4j credentials are not fully configured")
-    else:
-        try:
-            with neo4j_driver.session(database=NEO4J_DATABASE) as session:
-                session.run("RETURN 1").consume()
-            app.state.neo4j_available = True
-        except Exception:
-            logger.error("Geo Agent failed to connect to Neo4j:\n%s", traceback.format_exc())
-
-    if app.state.db_available and app.state.neo4j_available:
-        print("✅ Geo Agent connected to Postgres and Neo4j")
-
-
-@app.on_event("shutdown")
-def shutdown_connections() -> None:
-    if neo4j_driver is not None:
-        neo4j_driver.close()
-
-
-@app.get("/health")
-def health_check() -> dict[str, str]:
-    return {"status": "ok"}
-
-
-@app.post("/evaluate")
-def evaluate(body: GeoEvaluateRequest) -> dict:
-    if engine is None or not getattr(app.state, "db_available", False):
-        raise HTTPException(status_code=503, detail="Database unavailable")
-
-    active_neo4j_driver = neo4j_driver if getattr(app.state, "neo4j_available", False) else None
-    started = time.perf_counter()
-    try:
-        with engine.connect() as connection:
-            result = evaluate_geo(
-                body.txn_id,
-                body.account_id,
-                connection,
-                active_neo4j_driver,
-            )
-    except TransactionNotFoundError:
-        raise HTTPException(status_code=404, detail="Transaction not found") from None
-    except SQLAlchemyError:
-        logger.error("Database error while evaluating txn_id=%s:\n%s", body.txn_id, traceback.format_exc())
-        app.state.db_available = False
-        raise HTTPException(status_code=503, detail="Database unavailable") from None
-    except Neo4jError:
-        logger.error("Neo4j error while evaluating txn_id=%s:\n%s", body.txn_id, traceback.format_exc())
-        app.state.neo4j_available = False
-        with engine.connect() as connection:
-            result = evaluate_geo(body.txn_id, body.account_id, connection, None)
-    except Exception:
-        logger.error("Unexpected error while evaluating txn_id=%s:\n%s", body.txn_id, traceback.format_exc())
-        raise
-
-    latency_ms = int((time.perf_counter() - started) * 1000)
-    response = {**result, "latency_ms": latency_ms}
-    logger.info(
-        "Evaluated txn_id=%s risk=%s confidence=%s latency_ms=%s",
-        body.txn_id,
-        response["risk_score"],
-        response["confidence"],
-        latency_ms,
+    device_id: str = Field(..., min_length=1)
+    latitude: float = Field(..., ge=-90.0, le=90.0)
+    longitude: float = Field(..., ge=-180.0, le=180.0)
+    timestamp: datetime | None = Field(
+        default=None, description="Event time; defaults to now (UTC)."
     )
-    return response
+
+
+class GeoEvaluateResponse(BaseModel):
+    txn_id: str
+    agent_name: str = GEO_AGENT
+    risk_score: float = Field(..., ge=0.0, le=1.0)
+    confidence_score: float = Field(..., ge=0.0, le=1.0)
+    signals: dict[str, float]
+    latency_ms: float = Field(..., ge=0.0)
+
+
+@app.post("/evaluate", response_model=GeoEvaluateResponse)
+async def evaluate(body: GeoEvaluateRequest) -> GeoEvaluateResponse:
+    if agent.pg_pool is None:
+        raise HTTPException(status_code=503, detail="geo agent: postgres unavailable")
+    started = time.monotonic()
+    try:
+        risk_score, confidence, signals = await agent.evaluate(
+            account_id=body.account_id,
+            txn_id=body.txn_id,
+            device_id=body.device_id,
+            latitude=body.latitude,
+            longitude=body.longitude,
+            timestamp=body.timestamp or datetime.now(timezone.utc),
+        )
+    except RedisUnavailableError as exc:
+        logger.error("Redis unavailable for txn_id=%s: %s", body.txn_id, exc)
+        raise HTTPException(status_code=503, detail="geo agent: redis unavailable") from None
+    except PostgresUnavailableError as exc:
+        logger.error("Postgres unavailable for txn_id=%s: %s", body.txn_id, exc)
+        raise HTTPException(status_code=503, detail="geo agent: postgres unavailable") from None
+
+    latency_ms = (time.monotonic() - started) * 1000
+    logger.info(
+        "Evaluated txn_id=%s risk=%.4f confidence=%.4f latency_ms=%.2f",
+        body.txn_id, risk_score, confidence, latency_ms,
+    )
+    return GeoEvaluateResponse(
+        txn_id=body.txn_id,
+        risk_score=risk_score,
+        confidence_score=confidence,
+        signals=signals,
+        latency_ms=round(latency_ms, 3),
+    )
