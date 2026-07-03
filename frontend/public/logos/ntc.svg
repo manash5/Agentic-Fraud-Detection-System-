@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" fill="none">
+  <rect width="120" height="120" rx="16" fill="#0066B3"/>
+  <circle cx="60" cy="46" r="18" fill="#fff"/>
+  <path d="M60 34c6.6 0 12 5.4 12 12s-5.4 12-12 12-12-5.4-12-12 5.4-12 12-12Z" fill="#0066B3"/>
+  <text x="60" y="92" text-anchor="middle" fill="#fff" font-family="Arial,sans-serif" font-size="22" font-weight="700">NTC</text>
+</svg>
