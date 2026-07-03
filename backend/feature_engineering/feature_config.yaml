@@ -161,6 +161,52 @@ geo_agent:
     travel_feasibility: 0.5
     device_novelty: 0.5
 
+graph_agent:
+  # Track B Graph Agent (agents/graph_agent.py): Neo4j account-network risk.
+  # Graph model: (:Account|:Merchant|:ExternalAccount)-[:SENT {...}]->(target).
+  # Volume features come from the RELIABLE node-table degrees (90-day full
+  # window); topology (fan-in/fan-out) is recomputed from the SAMPLED edges.
+  # The paper fixes only the Synthesis Agent's cross-agent weights (graph=0.4),
+  # not this agent's internal rule contributions — the values below are a
+  # documented judgment call, tuned so a fraud-seed spoke feeding the COMM-042
+  # collector BLOCKs, the collector itself BLOCKs, and clean accounts ALLOW.
+  collector_id: "ACC-0011204"       # COMM-042 WATCHLIST fraud-seed collector
+  fanout:
+    suspicious_min: 4               # distinct recipients in one calendar day
+    smurfing_min: 5                 # doc 3.5 strong smurfing signal
+  fanin:
+    elevated_min: 5                 # distinct all-time senders
+    collector_min: 50              # collector-level aggregation hub
+  structuring:
+    flag_ratio: 0.5                 # >=50% of outgoing hug NRB thresholds (hidden pattern 1)
+  mule:
+    min_degree_in: 100              # doc 3.7 pass-through mule
+    max_net_ratio: 0.10             # |received - sent| / received < 10%
+  reciprocal_cap: 3                 # within-24h reciprocals saturating the layering signal
+  # risk_tier / is_fraud_seed identity contributions (additive).
+  risk_tier_scores:
+    WATCHLIST: 0.35
+    HIGH: 0.15
+    MEDIUM: 0.05
+    LOW: 0.0
+  # Additive rule contributions; the raw sum is clipped to [0,1]. "Very strong"
+  # signals (direct-to-collector) are sized so that, combined with the account's
+  # own fraud-seed flag, they clear the BLOCK line on their own.
+  weights:
+    direct_to_collector: 0.55       # very strong (doc COMM-042)
+    two_hop_to_collector: 0.25      # moderate (reachable within 2 hops)
+    is_fraud_seed: 0.30
+    smurfing: 0.45                  # max_fanout_24h >= smurfing_min
+    smurfing_suspicious: 0.20       # suspicious_min <= max_fanout_24h < smurfing_min
+    mule_shape: 0.40
+    structuring: 0.35               # structuring_ratio >= flag_ratio
+    fan_in_collector: 0.35          # in_senders >= collector_min
+    fan_in_elevated: 0.15           # elevated_min <= in_senders < collector_min
+    layering: 0.15                  # scaled by reciprocal_txns / reciprocal_cap
+  decision:
+    block_at: 0.70                  # score >= this  -> BLOCK / HIGH
+    otp_at: 0.40                    # score >= this  -> OTP_ONLY / MEDIUM
+
 geo:
   # A txn is "impossible travel" only if BOTH hold — the km floor suppresses
   # false flags from IP-geolocation jitter over short hops.

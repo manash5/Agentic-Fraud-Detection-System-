@@ -40,9 +40,6 @@ ml = [
     "mlflow>=2.20.0",
 ]
 
-[project.scripts]
-fraud-service = "run_service:main"
-
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]

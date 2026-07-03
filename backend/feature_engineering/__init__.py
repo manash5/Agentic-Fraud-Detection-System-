@@ -1,17 +1,7 @@
-"""Feature engineering layer for the Velocity and Geo agents.
+"""Config + Redis state shared by the Velocity and Geo agents.
 
-Redis holds the hot per-transaction state; Postgres is the source of truth
-and the batch/historical path. See README.md in this package.
+Only the runtime hot-path helpers live here now: ``config`` (feature_config.yaml
+loader), ``redis_client`` (Redis state + ``RedisUnavailable``) and ``geo_math``
+(haversine). The historical batch feature-engineering pipeline has been removed;
+the agents do not depend on it.
 """
-
-__all__ = [
-    "TransactionFeatureEngineer",
-    "VelocityFeatureEngineer",
-    "GeoFeatureEngineer",
-    "VelocityStateStore",
-]
-
-from feature_engineering.geo_features import GeoFeatureEngineer
-from feature_engineering.redis_client import VelocityStateStore
-from feature_engineering.transaction_features import TransactionFeatureEngineer
-from feature_engineering.velocity_features import VelocityFeatureEngineer

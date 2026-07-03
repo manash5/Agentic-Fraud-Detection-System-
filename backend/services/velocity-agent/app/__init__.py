@@ -1,1 +1,0 @@
-"""Velocity Agent application package."""
