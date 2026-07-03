@@ -1,0 +1,47 @@
+[project]
+name = "fraud-detection-backend"
+version = "0.1.0"
+description = "Agentic multi-model fraud detection backend for Nepal digital payments."
+readme = "README.md"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    "fastapi>=0.136.1",
+    "joblib>=1.4.0",
+    "numpy>=2.4.6",
+    "numba>=0.59.0",
+    "llvmlite>=0.42.0",
+    "pandas>=2.2.0,<3.0.0",
+    "psycopg2-binary>=2.9.12",
+    "pydantic-settings>=2.0.0",
+    "python-dotenv>=1.2.2",
+    "redis>=7.4.0",
+    "scikit-learn>=1.8.0",
+    "shap>=0.46.0,<0.47.0",
+    "sqlalchemy>=2.0.0",
+    "torch>=2.12.0",
+    "uvicorn>=0.47.0",
+    "xgboost>=3.2.0",
+    "neo4j>=6.2.0",
+    "seaborn>=0.13.2",
+    "psutil>=7.2.2",
+    "tqdm>=4.68.2",
+    "lightgbm>=4.6.0",
+]
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28.0",
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+]
+ml = [
+    "mlflow>=2.20.0",
+]
+
+[project.scripts]
+fraud-service = "run_service:main"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+asyncio_mode = "auto"

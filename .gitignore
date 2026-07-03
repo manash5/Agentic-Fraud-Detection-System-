@@ -1,0 +1,318 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.dll
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+cover/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb_checkpoints
+*/.ipynb_checkpoints/*
+.ipynb_checkpoints/*
+.pynb_checkpoints
+*.pynb
+*.py~
+
+
+# pyenv
+.python-version
+
+# pipenv
+Pipfile.lock
+
+# poetry
+poetry.lock
+
+# pdm
+.pdm.toml
+
+# PEP 582
+__pypackages__/
+
+# Celery
+celerybeat-schedule
+celerybeat.pid
+
+# SageMath
+*.sage.py
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+.envrc
+*.env
+
+# Spyder project settings
+.spyderproject
+.spyproject
+
+# Rope project settings
+.ropeproject
+
+# mkdocs documentation
+/site
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre type checker
+.pyre/
+
+# pytype static type analyzer
+.pytype/
+
+# profiling data
+.prof
+*.prof
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.code-workspace
+
+# Redis
+*.rdb
+*.aof
+dump.rdb
+appendonly.aof
+redis.log
+
+# PostgreSQL
+*.sql
+*.dump
+*.backup
+postgresql.log
+postgresql-data/
+pgdata/
+data/
+
+# Neo4j
+*.db
+neo4j/data/
+neo4j/logs/
+neo4j/metrics/
+*.graphdb
+
+# Kafka
+/kafka-logs/
+/kafka-data/
+*.log
+*.log.*
+
+# MLflow
+mlruns/
+*.mlflow
+mlflow.db
+mlruns/
+
+# SHAP outputs
+*.shap
+shap_explanations/
+
+# Model artifacts
+*.pkl
+*.pickle
+*.joblib
+*.h5
+*.hdf5
+*.keras
+*.pb
+*.pbtxt
+*.onnx
+*.tflite
+*.model
+*.weights
+*.bin
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+
+# XGBoost
+*.ubj
+*.model
+
+# LSTM / PyTorch / TensorFlow
+*.pth
+*.pt
+*.ckpt
+*.h5
+events.out.tfevents.*
+*.meta
+*.index
+checkpoints/
+lightning_logs/
+
+# scikit-learn
+*.joblib
+
+# Vector stores
+chroma/
+vectordb/
+*.faiss
+
+# Data files (raw, intermediate, processed)
+*.csv
+*.parquet
+*.feather
+*.arrow
+*.jsonl
+*.json
+*.xlsx
+*.xls
+*.tsv
+data/
+datasets/
+*.db
+*.sqlite
+*.sqlite3
+
+# Large files
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.rar
+*.7z
+*.pkl.gz
+*.npy
+*.npz
+
+# Logs
+*.log
+logs/
+*.log.*
+
+# Secrets and credentials
+*.key
+*.pem
+*.crt
+*.cer
+*.p12
+*.pfx
+secrets.yaml
+config.local.yaml
+credentials.json
+service-account.json
+*.secret
+*.env
+.env.local
+.env.*.local
+.env.production
+.env.staging
+api_keys.txt
+private_key.txt
+
+# Docker
+*.pid
+docker-compose.override.yaml
+docker-compose.override.yml
+.dockerignore
+Dockerfile.bak
+
+# Kubernetes
+*.kubeconfig
+kubeconfig.yaml
+*.secret.yaml
+helm/secrets/
+
+# Terraform
+*.tfstate
+*.tfstate.*
+.terraform/
+terraform.tfvars
+terraform.tfvars.json
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+*.tmp
+*.temp
+desktop.ini
+$RECYCLE.BIN/
+
+# Linux
+*~
+
+# Project-specific
+audit_logs/
+verdict_cache/
+temp/
+tmp/
+*.lock
+*.pyc.backup
+fraud_pattern_cache/
+redis_dump/
+backup/
+export/
+
+# Notebook outputs (optional - keep if you want version control)
+*.nbsvg
+*.nbconvert.ipynb

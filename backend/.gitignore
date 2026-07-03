@@ -1,0 +1,23 @@
+.env
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+*.log
+
+datasets/raw/*
+!datasets/raw/README.md
+
+# Model artifacts
+ml/models/*
+!ml/models/.gitkeep
+
+# MLflow local store
+mlruns/
+mlruns/**
+
+# Processed datasets (regenerate via ml.features.run_pipeline)
+datasets_processed/*
+!datasets_processed/.gitkeep
