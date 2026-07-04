@@ -38,7 +38,14 @@ class AgentVerdict(BaseModel):
 
 
 class AgentWeights(BaseModel):
-    """Per-agent weight quad (velocity, geo, graph, behavior)."""
+    """Per-agent weight quad (velocity, geo, graph, behavior).
+
+    The paper (§IV-E, Tables I & II) defines three agents — velocity, geo,
+    behavior. This implementation splits the paper's Geo Agent into ``geo``
+    (travel + device) and ``graph`` (Neo4j network checks). Absent agents
+    appear in audit output with weight ``0.0``; fusion renormalizes over those
+    that reported.
+    """
 
     velocity: float = Field(..., ge=0.0, le=1.0)
     geo: float = Field(..., ge=0.0, le=1.0)
@@ -47,7 +54,11 @@ class AgentWeights(BaseModel):
 
 
 class Layer1Weights(BaseModel):
-    """Table I — transaction-type base weights."""
+    """Table I — transaction-type base weights (velocity/geo/graph/behavior).
+
+    Derived from the paper's Table I by carving a ``graph`` share out of the
+    original Geo weight (the graph checks used to live inside the Geo Agent).
+    """
 
     p2p_transfer: AgentWeights = AgentWeights(
         velocity=0.35, geo=0.20, graph=0.20, behavior=0.25)
@@ -60,7 +71,13 @@ class Layer1Weights(BaseModel):
 
 
 class Layer2Weights(BaseModel):
-    """Table II — fraud-pattern adjustment weights."""
+    """Table II — fraud-pattern effectiveness weights (velocity/geo/graph/behavior).
+
+    The graph agent is the strongest detector of coordinated fraud, so it
+    carries the dominant share for ``fraud_ring`` and a large share for
+    ``money_laundering`` (circular money flow); velocity leads ``rapid_transfers``
+    and behavior leads ``novel_pattern``.
+    """
 
     rapid_transfers: AgentWeights = AgentWeights(
         velocity=0.50, geo=0.10, graph=0.15, behavior=0.25)
@@ -73,17 +90,27 @@ class Layer2Weights(BaseModel):
 
 
 class BlendedWeights(AgentWeights):
-    """Final 50/50 blended weights applied during synthesis."""
+    """Final 50/50 blended weights actually applied during synthesis.
+
+    Agents absent from a given request appear here with weight ``0.0``.
+    """
 
 
 class SynthesisResult(BaseModel):
+    """Full audit-grade output of the Synthesis Agent (paper §IV-E, §V-A).
+
+    Carries everything the NRB audit trail needs: the fused score, both
+    selected weight layers, the blended weights, the detected pattern, the
+    disagreement statistic, which agents contributed, and the final verdict.
+    """
+
     final_score: float = Field(..., ge=0.0, le=1.0)
     weights_applied: BlendedWeights
     fraud_pattern: FraudPattern
     disagreement_score: float = Field(..., ge=0.0)
     decision: DecisionAction
-    layer1_weights: AgentWeights | None = None
-    layer2_weights: AgentWeights | None = None
+    layer1_weights: AgentWeights
+    layer2_weights: AgentWeights
     agents_used: list[str] = Field(default_factory=list)
     otp_forced_by_disagreement: bool = False
 

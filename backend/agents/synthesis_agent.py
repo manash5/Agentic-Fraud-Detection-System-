@@ -256,7 +256,7 @@ def synthesise(
     Raises ``ValueError`` if no agents are supplied (there is nothing to fuse),
     or if a reporting agent has zero weight in BOTH Table I and Table II — that
     verdict would otherwise be silently discarded by Eq. 2 while still being
-    listed in ``agents_used`` (today this is the not-yet-weighted Graph Agent).
+    listed in ``agents_used``.
     """
     present = {a: v for a, v in verdicts.items() if a in AGENTS}
     if not present:
@@ -274,9 +274,7 @@ def synthesise(
 
     # Guard: an agent that reports a verdict but carries zero weight in both
     # layers would be silently dropped by Eq. 2 while still being listed in
-    # agents_used. This never fires for the current Table I/II agents
-    # (velocity, geo, behavior); it exists to catch the day Graph is wired in
-    # without Tables I & II gaining a graph column (shared/schemas/risk.py).
+    # agents_used.
     unweighted = sorted(a for a in present if blended.get(a, 0.0) == 0.0)
     if unweighted:
         raise ValueError(

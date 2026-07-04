@@ -7,11 +7,18 @@ One process, one command, four agents mounted under their own prefixes:
     POST /graph/evaluate             Graph Agent     (Neo4j account network)
     POST /agents/behavior/evaluate   Behavior Agent  (XGBoost + IsoForest + LSTM ensemble)
     POST /agents/synthesis/evaluate  Synthesis Agent (fuses the verdicts above; Postgres audit only)
+    POST /evaluate                   Full pipeline   (parallel fan-out + synthesis in one call)
+    POST /pipeline/submit            Async Kafka entrypoint
     GET  /health                     per-agent connectivity
 
 The Synthesis endpoint is called AFTER the other agents have returned their
-verdicts — the caller fans out to velocity/geo/(graph)/(behavior), then posts
+verdicts — the caller fans out to velocity/geo/graph/behavior, then posts
 the collected scores to synthesis for the fused decision.
+
+The Synthesis Agent is pure orchestration math (paper §IV-E): it takes the
+risk/confidence verdicts the other agents produced and fuses them into one
+score + fraud pattern + PASS/OTP/BLOCK decision. It reaches no datastore, so
+it is always available even when an agent's backing store is down.
 
 Each agent owns its own backing store; a store being down yields a 503 from
 that agent's endpoint only (never a fabricated score) — the others keep serving.
@@ -321,6 +328,7 @@ async def evaluate_graph(body: GraphRequest) -> GraphResponse:
         signals=result["signals"],
         latency_ms=round((time.monotonic() - started) * 1000, 3),
     )
+
 
 
 # -- behavior --------------------------------------------------------------------
