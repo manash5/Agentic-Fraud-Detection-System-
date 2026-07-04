@@ -29,6 +29,7 @@ dependencies = [
     "pyyaml>=6.0.3",
     "asyncpg>=0.31.0",
     "jupyter>=1.1.1",
+    "lab>=8.10",
 ]
 
 [dependency-groups]
