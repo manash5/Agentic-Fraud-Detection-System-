@@ -74,6 +74,7 @@ class BehaviorResponse(BaseModel):
     weights_profile: str
     history_count: int
     model_breakdown: dict
+    shap: dict | None = None
     latency_ms: float = Field(..., ge=0.0)
 
 
@@ -108,6 +109,7 @@ async def evaluate(body: BehaviorRequest) -> BehaviorResponse:
         weights_profile=verdict.weights_profile,
         history_count=verdict.history_count,
         model_breakdown=verdict.model_breakdown,
+        shap=(verdict.model_breakdown.get("xgboost") or {}).get("shap"),
         latency_ms=round(latency_ms, 3),
     )
 

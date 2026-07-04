@@ -25,6 +25,7 @@ from behavior_agent.input_builders import (
     build_lstm_input,
     build_xgboost_input,
 )
+from shared.explainability.shap_utils import compute_shap_with_explainer, shap_to_compact
 
 
 @dataclass
@@ -46,28 +47,39 @@ def percentile_calibrate(raw: float, grid: np.ndarray) -> float:
     return float(np.searchsorted(grid, raw, side="left") / len(grid))
 
 
-async def score_xgboost(txn_id: str, conn: Any, bundle: ModelBundle) -> ModelScore:
+async def score_xgboost(txn_id: str, conn: Any, bundle: ModelBundle,
+                        *, shap_top_k: int | None = None) -> ModelScore:
     """Supervised branch: P(fraud) via predict_proba, already in [0,1]."""
     vec = await build_xgboost_input(txn_id, conn, bundle)
     proba = float(bundle.xgb_model.predict_proba(vec.reshape(1, -1))[0, 1])
+    detail: dict[str, Any] = {"recommended_threshold": bundle.xgb_threshold}
+    if shap_top_k and bundle.xgb_explainer is not None:
+        detail["shap"] = shap_to_compact(compute_shap_with_explainer(
+            bundle.xgb_explainer, vec, bundle.xgb_features, top_k=shap_top_k))
     return ModelScore(
         name="xgboost", contributed=True, raw_score=proba,
         calibrated_score=percentile_calibrate(proba, bundle.calibration["xgboost"]),
-        detail={"recommended_threshold": bundle.xgb_threshold},
+        detail=detail,
     )
 
 
 async def score_isolation_forest(txn_id: str, conn: Any,
-                                 bundle: ModelBundle) -> ModelScore:
+                                 bundle: ModelBundle,
+                                 *, shap_top_k: int | None = None) -> ModelScore:
     """Cold-start / complementary branch: ``-score_samples`` normalized to
     [0,1] by percentile rank against the 2M training anomaly scores."""
     vec = await build_isolation_forest_input(txn_id, conn, bundle)
     frame = pd.DataFrame(vec.reshape(1, -1), columns=bundle.iso_features)
     anomaly = float(-bundle.iso_model.score_samples(frame)[0])
+    detail: dict[str, Any] = {}
+    if shap_top_k and bundle.iso_explainer is not None:
+        detail["shap"] = shap_to_compact(compute_shap_with_explainer(
+            bundle.iso_explainer, vec, bundle.iso_features, top_k=shap_top_k))
     return ModelScore(
         name="isolation_forest", contributed=True, raw_score=anomaly,
         calibrated_score=percentile_calibrate(
             anomaly, bundle.calibration["isolation_forest"]),
+        detail=detail,
     )
 
 

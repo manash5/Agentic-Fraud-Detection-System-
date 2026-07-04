@@ -38,29 +38,38 @@ class AgentVerdict(BaseModel):
 
 
 class AgentWeights(BaseModel):
-    """Per-agent weight triple (velocity, geo, behavior)."""
+    """Per-agent weight quad (velocity, geo, graph, behavior)."""
 
     velocity: float = Field(..., ge=0.0, le=1.0)
     geo: float = Field(..., ge=0.0, le=1.0)
+    graph: float = Field(..., ge=0.0, le=1.0)
     behavior: float = Field(..., ge=0.0, le=1.0)
 
 
 class Layer1Weights(BaseModel):
     """Table I — transaction-type base weights."""
 
-    p2p_transfer: AgentWeights = AgentWeights(velocity=0.45, geo=0.25, behavior=0.30)
-    merchant_payment: AgentWeights = AgentWeights(velocity=0.30, geo=0.35, behavior=0.35)
-    atm_withdrawal: AgentWeights = AgentWeights(velocity=0.40, geo=0.40, behavior=0.20)
-    bill_payment: AgentWeights = AgentWeights(velocity=0.25, geo=0.30, behavior=0.45)
+    p2p_transfer: AgentWeights = AgentWeights(
+        velocity=0.35, geo=0.20, graph=0.20, behavior=0.25)
+    merchant_payment: AgentWeights = AgentWeights(
+        velocity=0.25, geo=0.25, graph=0.25, behavior=0.25)
+    atm_withdrawal: AgentWeights = AgentWeights(
+        velocity=0.30, geo=0.30, graph=0.25, behavior=0.15)
+    bill_payment: AgentWeights = AgentWeights(
+        velocity=0.20, geo=0.25, graph=0.20, behavior=0.35)
 
 
 class Layer2Weights(BaseModel):
     """Table II — fraud-pattern adjustment weights."""
 
-    rapid_transfers: AgentWeights = AgentWeights(velocity=0.60, geo=0.15, behavior=0.25)
-    fraud_ring: AgentWeights = AgentWeights(velocity=0.20, geo=0.55, behavior=0.25)
-    money_laundering: AgentWeights = AgentWeights(velocity=0.35, geo=0.30, behavior=0.35)
-    novel_pattern: AgentWeights = AgentWeights(velocity=0.33, geo=0.33, behavior=0.34)
+    rapid_transfers: AgentWeights = AgentWeights(
+        velocity=0.50, geo=0.10, graph=0.15, behavior=0.25)
+    fraud_ring: AgentWeights = AgentWeights(
+        velocity=0.15, geo=0.30, graph=0.40, behavior=0.15)
+    money_laundering: AgentWeights = AgentWeights(
+        velocity=0.25, geo=0.25, graph=0.25, behavior=0.25)
+    novel_pattern: AgentWeights = AgentWeights(
+        velocity=0.25, geo=0.25, graph=0.20, behavior=0.30)
 
 
 class BlendedWeights(AgentWeights):
@@ -73,6 +82,10 @@ class SynthesisResult(BaseModel):
     fraud_pattern: FraudPattern
     disagreement_score: float = Field(..., ge=0.0)
     decision: DecisionAction
+    layer1_weights: AgentWeights | None = None
+    layer2_weights: AgentWeights | None = None
+    agents_used: list[str] = Field(default_factory=list)
+    otp_forced_by_disagreement: bool = False
 
 
 class SHAPContribution(BaseModel):

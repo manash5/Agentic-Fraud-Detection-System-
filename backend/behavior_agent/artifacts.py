@@ -47,6 +47,9 @@ class ModelBundle:
     lstm_preproc: dict[str, Any]    # seq_scaler, static_scaler, ohe, district_freq
     # Percentile calibration grids: name -> sorted np.ndarray of reference scores
     calibration: dict[str, np.ndarray]
+    # Pre-built SHAP explainers (TreeExplainer) — created once at load time.
+    xgb_explainer: Any = None
+    iso_explainer: Any = None
 
 
 def _require(path: Path, what: str) -> Path:
@@ -120,6 +123,16 @@ def load_bundle(cfg: dict[str, Any] | None = None,
                     f"calibration file has no grid for '{name}' — rerun "
                     f"behavior_agent.build_calibration")
 
+    xgb_explainer = iso_explainer = None
+    try:
+        import shap
+        xgb_explainer = shap.TreeExplainer(xgb_model)
+        iso_explainer = shap.TreeExplainer(iso_model)
+    except Exception as exc:  # noqa: BLE001 — SHAP optional at load; scorers skip if None
+        import logging
+        logging.getLogger("behavior-agent").warning(
+            "SHAP explainers not preloaded: %s", exc)
+
     return ModelBundle(
         xgb_model=xgb_model, xgb_features=xgb_features, xgb_threshold=xgb_threshold,
         iso_model=iso_model, iso_scaler=iso_scaler, iso_features=iso_features,
@@ -127,4 +140,5 @@ def load_bundle(cfg: dict[str, Any] | None = None,
         lstm_model=lstm_model, lstm_manifest=lstm_manifest,
         lstm_seq_len=int(lstm_manifest["seq_len_N"]), lstm_preproc=lstm_preproc,
         calibration=calibration,
+        xgb_explainer=xgb_explainer, iso_explainer=iso_explainer,
     )

@@ -105,14 +105,29 @@ class BehaviorAgent:
                 # History drives both LSTM gating and the blend weights.
                 history = await account_history_count(account_id, txn_id, conn)
 
+            shap_cfg = self.cfg.get("shap", {})
+            shap_enabled = bool(shap_cfg.get("enabled", False))
+            shap_models = set(shap_cfg.get("models", ["xgboost"]))
+            shap_top_k = int(shap_cfg.get("top_k", 10)) if shap_enabled else None
+
+            async def _xgb(t: str, conn, bundle):
+                return await score_xgboost(
+                    t, conn, bundle,
+                    shap_top_k=shap_top_k if "xgboost" in shap_models else None)
+
+            async def _iso(t: str, conn, bundle):
+                return await score_isolation_forest(
+                    t, conn, bundle,
+                    shap_top_k=shap_top_k if "isolation_forest" in shap_models else None)
+
             async def _lstm(a: str, t: str, conn, bundle):
                 return await score_lstm(
                     a, t, conn, bundle, history_count=history,
                     min_history=self.cfg["history"]["lstm_min_history"])
 
             results = await asyncio.gather(
-                _with_conn(score_xgboost, txn_id),
-                _with_conn(score_isolation_forest, txn_id),
+                _with_conn(_xgb, txn_id),
+                _with_conn(_iso, txn_id),
                 _with_conn(_lstm, account_id, txn_id),
                 return_exceptions=True,
             )

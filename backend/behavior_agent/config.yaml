@@ -64,3 +64,9 @@ confidence:
 
 latency:
   budget_ms: 100   # paper's budget with all models preloaded; log warning above
+
+shap:
+  enabled: true
+  top_k: 10        # top-|k| features per tree model in the response/audit
+  models:           # which behavior sub-models get SHAP (LSTM skipped — not tree)
+    - xgboost
