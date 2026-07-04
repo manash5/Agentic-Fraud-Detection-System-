@@ -2,10 +2,16 @@
 
 One process, one command, three agents mounted under their own prefixes:
 
-    POST /velocity/evaluate   Velocity Agent  (Redis sliding windows)
-    POST /geo/evaluate        Geo Agent       (Redis + Postgres, travel + device)
-    POST /graph/evaluate      Graph Agent     (Neo4j account network)
+    POST /velocity/evaluate   Velocity Agent   (Redis sliding windows)
+    POST /geo/evaluate        Geo Agent        (Redis + Postgres, travel + device)
+    POST /graph/evaluate      Graph Agent      (Neo4j account network)
+    POST /synthesis/evaluate  Synthesis Agent  (2-layer fusion of agent verdicts)
     GET  /health              per-agent connectivity
+
+The Synthesis Agent is pure orchestration math (paper §IV-E): it takes the
+risk/confidence verdicts the other agents produced and fuses them into one
+score + fraud pattern + PASS/OTP/BLOCK decision. It reaches no datastore, so
+it is always available even when an agent's backing store is down.
 
 Each agent owns its own backing store; a store being down yields a 503 from
 that agent's endpoint only (never a fabricated score) — the others keep serving.
@@ -45,7 +51,13 @@ from agents.graph_agent import (  # noqa: E402
     get_driver,
     graph_counts,
 )
+from agents.synthesis_agent import synthesise  # noqa: E402
 from agents.velocity_agent import RedisUnavailableError, VelocityAgent  # noqa: E402
+from shared.schemas.risk import (  # noqa: E402
+    AgentVerdict,
+    SynthesisResult,
+    TransactionType,
+)
 from shared.schemas.transaction import TransactionEvent  # noqa: E402
 
 logger = logging.getLogger("fraud-api")
@@ -234,5 +246,73 @@ async def evaluate_graph(body: GraphRequest) -> GraphResponse:
         decision=result["decision"],
         reasons=result["reasons"],
         signals=result["signals"],
+        latency_ms=round((time.monotonic() - started) * 1000, 3),
+    )
+
+
+# -- synthesis -----------------------------------------------------------------
+
+
+class AgentVerdictIn(BaseModel):
+    """One agent's output as consumed by the Synthesis Agent.
+
+    ``confidence_score`` is accepted as an alias for ``confidence`` so the
+    running agents' response shape (which uses ``confidence_score``) can be
+    forwarded verbatim.
+    """
+
+    risk_score: float = Field(..., ge=0.0, le=1.0)
+    confidence: float = Field(..., ge=0.0, le=1.0, alias="confidence_score")
+    latency_ms: float = Field(default=0.0, ge=0.0)
+
+    model_config = {"populate_by_name": True}
+
+    def to_verdict(self) -> AgentVerdict:
+        return AgentVerdict(
+            risk_score=self.risk_score,
+            confidence=self.confidence,
+            latency_ms=int(self.latency_ms),
+        )
+
+
+class SynthesisRequest(BaseModel):
+    """The three (soon four) agent verdicts to fuse, plus the transaction type.
+
+    Every agent is optional: pass whichever ones ran. ``behavior`` has no
+    running agent yet — omit it today and the synthesizer fuses the rest;
+    include it once the Behavior Agent exists and it is folded in automatically.
+    At least one agent must be present.
+    """
+
+    transaction_id: str = Field(..., min_length=1)
+    transaction_type: TransactionType = TransactionType.P2P_TRANSFER
+    velocity: AgentVerdictIn | None = None
+    geo: AgentVerdictIn | None = None
+    graph: AgentVerdictIn | None = None
+    behavior: AgentVerdictIn | None = None
+
+
+class SynthesisResponse(BaseModel):
+    transaction_id: str
+    agent_name: str = "synthesis-agent"
+    result: SynthesisResult
+    latency_ms: float = Field(..., ge=0.0)
+
+
+@app.post("/synthesis/evaluate", response_model=SynthesisResponse)
+async def evaluate_synthesis(body: SynthesisRequest) -> SynthesisResponse:
+    started = time.monotonic()
+    verdicts = {
+        name: getattr(body, name).to_verdict()
+        for name in ("velocity", "geo", "graph", "behavior")
+        if getattr(body, name) is not None
+    }
+    try:
+        result = synthesise(verdicts, body.transaction_type)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    return SynthesisResponse(
+        transaction_id=body.transaction_id,
+        result=result,
         latency_ms=round((time.monotonic() - started) * 1000, 3),
     )
