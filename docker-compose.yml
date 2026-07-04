@@ -1,0 +1,132 @@
+name: fraud-detection
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: fraud_detection_global
+      POSTGRES_USER: fraud
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-frauddev}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fraud -d fraud_detection_global"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  neo4j:
+    image: neo4j:5
+    environment:
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:-frauddev}
+      # The backend expects a database named fraud-detection, not the default.
+      NEO4J_initial_dbms_default__database: fraud-detection
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    volumes:
+      - neo4jdata:/data
+      # Exposes the account graph CSVs to LOAD CSV as file:///account_graph_*.csv
+      - ./backend/datasets:/import:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:7474 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql://fraud:${POSTGRES_PASSWORD:-frauddev}@postgres:5432/fraud_detection_global
+      FRAUD_DB_DSN: host=postgres user=fraud password=${POSTGRES_PASSWORD:-frauddev} dbname=fraud_detection_global
+      FRAUD_REDIS_HOST: redis
+      FRAUD_REDIS_PORT: "6379"
+      NEO4J_URI: neo4j://neo4j:7687
+      NEO4J_USERNAME: neo4j
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-frauddev}
+      NEO4J_DATABASE: fraud-detection
+      FRAUD_KAFKA_BOOTSTRAP: kafka:9092
+    volumes:
+      # Datasets stay outside the image; mounted only for the one-time load scripts.
+      - ./backend/datasets:/app/datasets:ro
+      - ./backend/datasets_processed:/app/datasets_processed
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+
+  # ---- optional: async event-bus path (docker compose --profile kafka up) ----
+
+  kafka:
+    image: apache/kafka:3.9.0
+    profiles: ["kafka"]
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+
+  orchestrator:
+    build: ./backend
+    profiles: ["kafka"]
+    command: ["uv", "run", "--no-sync", "python", "-m", "kafka_bus.orchestrator"]
+    environment:
+      DATABASE_URL: postgresql://fraud:${POSTGRES_PASSWORD:-frauddev}@postgres:5432/fraud_detection_global
+      FRAUD_DB_DSN: host=postgres user=fraud password=${POSTGRES_PASSWORD:-frauddev} dbname=fraud_detection_global
+      FRAUD_REDIS_HOST: redis
+      FRAUD_REDIS_PORT: "6379"
+      NEO4J_URI: neo4j://neo4j:7687
+      NEO4J_USERNAME: neo4j
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-frauddev}
+      NEO4J_DATABASE: fraud-detection
+      FRAUD_KAFKA_BOOTSTRAP: kafka:9092
+    depends_on:
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+
+  # ---- optional: ops dashboard (docker compose --profile dashboard up) ----
+
+  frontend:
+    build: ./frontend
+    profiles: ["dashboard"]
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+
+volumes:
+  pgdata:
+  neo4jdata:
