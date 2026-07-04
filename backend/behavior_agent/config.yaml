@@ -1,0 +1,72 @@
+# Behavior Agent configuration — ensemble weights, thresholds, history
+# cutoffs, model paths. Code must never hard-code these.
+
+database:
+  # libpq-style or postgres:// URI; override with env var FRAUD_DB_DSN
+  dsn: "dbname=fraud_detection_global"
+  pool_min_size: 2
+  pool_max_size: 10
+
+redis:
+  host: "localhost"     # override with env var FRAUD_REDIS_HOST
+  port: 6379            # override with env var FRAUD_REDIS_PORT
+
+models:
+  # Paths relative to backend/
+  xgboost:
+    model: "models/xgboost_behavior.json"
+    manifest: "models/model_feature_list.json"
+  isolation_forest:
+    model: "models/isolation_forest_transactions_raw.joblib"
+    scaler: "models/isolation_forest_scaler.joblib"
+    manifest: "models/isolation_forest_feature_list.json"
+  lstm:
+    model: "models/lstm/lstm_two_branch.pt"
+    manifest: "models/lstm/manifest.json"
+    preprocessors: "models/lstm/preprocessors.joblib"
+  # Percentile-rank calibration grids (built by behavior_agent.build_calibration)
+  calibration: "models/behavior_score_calibration.json"
+
+history:
+  # LSTM only fires for accounts with >= this many transactions at evaluation
+  # time (paper Section IV-C-3; below this it was not trained to be reliable).
+  lstm_min_history: 50
+  # Below this the account is treated as cold-start: XGBoost's profile-join
+  # features are weak, so Isolation Forest carries more weight.
+  cold_start_below: 10
+
+ensemble:
+  # Blend operates on percentile-calibrated scores so the three model outputs
+  # are on one comparable scale ("how extreme vs. that model's reference
+  # population"); raw model outputs are still reported in the breakdown.
+  # Set to "raw" to blend raw model outputs instead.
+  blend_on: "calibrated"
+  # History-dependent weight profiles. Weights are renormalized over the
+  # models that actually contributed, so a profile listing an abstaining
+  # model still sums to 1 at blend time.
+  weights:
+    cold_start:      # history < history.cold_start_below
+      xgboost: 0.35
+      isolation_forest: 0.65
+      lstm: 0.0
+    medium:          # cold_start_below <= history < lstm_min_history
+      xgboost: 0.60
+      isolation_forest: 0.40
+      lstm: 0.0
+    rich:            # history >= lstm_min_history (LSTM fires)
+      xgboost: 0.45
+      isolation_forest: 0.20
+      lstm: 0.35
+
+confidence:
+  # confidence = coverage * agreement (see ensemble.py for the formula)
+  coverage_by_n_contributing: {1: 0.50, 2: 0.75, 3: 1.00}
+
+latency:
+  budget_ms: 100   # paper's budget with all models preloaded; log warning above
+
+shap:
+  enabled: true
+  top_k: 10        # top-|k| features per tree model in the response/audit
+  models:           # which behavior sub-models get SHAP (LSTM skipped — not tree)
+    - xgboost

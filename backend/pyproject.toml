@@ -29,9 +29,11 @@ dependencies = [
     "lightgbm>=4.6.0",
     "pyyaml>=6.0.3",
     "asyncpg>=0.31.0",
+    "aiokafka>=0.11.0",
     "jupyter>=1.1.1",
     "lab>=8.10",
     "imbalanced-learn>=0.14.2",
+    "aiokafka>=0.14.0",
 ]
 
 [dependency-groups]

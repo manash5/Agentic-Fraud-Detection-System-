@@ -21,18 +21,54 @@ def contributions_to_explanation(
     shap_values: np.ndarray,
     *,
     base_value: float = 0.0,
+    top_k: int | None = None,
 ) -> SHAPExplanation:
-    """Build a standard SHAPExplanation from a 1-D contribution vector."""
+    """Build a SHAPExplanation; optionally keep only the top-|k| features."""
     flat = np.asarray(shap_values, dtype=float).reshape(-1)
+    if top_k is not None and top_k < len(flat):
+        idx = np.argsort(np.abs(flat))[-top_k:][::-1]
+        names = [feature_names[i] for i in idx]
+        flat = flat[idx]
+    else:
+        names = feature_names
     contributions = [
-        SHAPContribution(
-            feature=name,
-            value=float(val),
-            direction=_direction(float(val)),
-        )
-        for name, val in zip(feature_names, flat, strict=True)
+        SHAPContribution(feature=name, value=float(val), direction=_direction(float(val)))
+        for name, val in zip(names, flat, strict=True)
     ]
     return SHAPExplanation.from_contributions(contributions, base_value=base_value)
+
+
+def compute_shap_with_explainer(
+    explainer: Any,
+    features: np.ndarray,
+    feature_names: list[str],
+    *,
+    top_k: int | None = 10,
+) -> SHAPExplanation:
+    """Score one row with a pre-built TreeExplainer (avoids per-request init)."""
+    matrix = np.asarray(features, dtype=float)
+    if matrix.ndim == 1:
+        matrix = matrix.reshape(1, -1)
+    shap_output = explainer.shap_values(matrix)
+    if isinstance(shap_output, list):
+        shap_output = shap_output[1] if len(shap_output) > 1 else shap_output[0]
+    values = np.asarray(shap_output, dtype=float).reshape(-1)
+    base_arr = np.asarray(explainer.expected_value).reshape(-1)
+    base = float(base_arr[1] if base_arr.size > 1 else base_arr[0])
+    return contributions_to_explanation(feature_names, values, base_value=base, top_k=top_k)
+
+
+def shap_to_compact(explanation: SHAPExplanation) -> dict[str, object]:
+    """Audit-friendly dict (top features only, no full 87-dim dump)."""
+    return {
+        "base_value": explanation.base_value,
+        "top_features": [
+            {"feature": n, "value": v, "direction": d}
+            for n, v, d in zip(
+                explanation.feature_names, explanation.values, explanation.directions,
+                strict=True)
+        ],
+    }
 
 
 def compute_shap_for_xgboost(

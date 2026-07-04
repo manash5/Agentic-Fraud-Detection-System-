@@ -253,7 +253,10 @@ def synthesise(
     :class:`AgentVerdict`. Absent agents — behavior today — are simply omitted;
     the two-layer weighting and Eq. 2 renormalize over whoever reported.
 
-    Raises ``ValueError`` if no agents are supplied (there is nothing to fuse).
+    Raises ``ValueError`` if no agents are supplied (there is nothing to fuse),
+    or if a reporting agent has zero weight in BOTH Table I and Table II — that
+    verdict would otherwise be silently discarded by Eq. 2 while still being
+    listed in ``agents_used``.
     """
     present = {a: v for a, v in verdicts.items() if a in AGENTS}
     if not present:
@@ -268,6 +271,19 @@ def synthesise(
     w1 = layer1_weights(transaction_type)
     w2 = layer2_weights(pattern)
     blended = blend_weights(w1, w2)
+
+    # Guard: an agent that reports a verdict but carries zero weight in both
+    # layers would be silently dropped by Eq. 2 while still being listed in
+    # agents_used.
+    unweighted = sorted(a for a in present if blended.get(a, 0.0) == 0.0)
+    if unweighted:
+        raise ValueError(
+            f"agent(s) {', '.join(unweighted)} reported a verdict but have "
+            "zero blended weight across Table I and Table II — add them to "
+            "Layer1Weights/Layer2Weights in shared/schemas/risk.py before "
+            "wiring them into synthesis, otherwise their verdicts would be "
+            "silently ignored"
+        )
 
     final_score = fuse(present, blended)
     disagreement = disagreement_score(risks)

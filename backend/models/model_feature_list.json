@@ -1,5 +1,6 @@
 {
   "model_file": "xgboost_behavior.json",
+  "model_file_joblib": "xgboost_behavior.joblib",
   "feature_columns": [
     "processing_time_ms",
     "is_international",
@@ -89,13 +90,14 @@
     "primary_channel_MOBILE_APP",
     "primary_channel_WEB"
   ],
-  "scale_pos_weight": 53.03579871664978,
-  "recommended_threshold": 0.47045353055000305,
-  "best_iteration": 8,
-  "val_pr_auc": 0.11833976343682133,
-  "val_roc_auc": 0.5660858117349401,
+  "imbalance_strategy": "ADASYN",
+  "recommended_threshold": 0.011544602923095226,
+  "best_iteration": 301,
+  "val_pr_auc": 0.11784991051733625,
+  "val_roc_auc": 0.5501125931818038,
   "random_state": 42,
-  "trained_rows": 320000,
+  "trained_rows_original": 320000,
+  "trained_rows_resampled": 627194,
   "train_cutoff_timestamp": "2026-02-17 18:31:06.476000",
   "role": "Supervised high-confidence branch of the Behavior Agent ensemble. Outputs P(fraud) in [0,1] via predict_proba. Weight heavily for accounts with history; lean on the Isolation Forest branch for cold-start. Blend joins val_scored_xgboost.csv to the Isolation Forest scores on txn_id."
 }
