@@ -1,11 +1,12 @@
-"""Unified Fraud-Detection API — all three agents in one FastAPI app.
+"""Unified Fraud-Detection API — all agents in one FastAPI app.
 
-One process, one command, three agents mounted under their own prefixes:
+One process, one command, four agents mounted under their own prefixes:
 
-    POST /velocity/evaluate   Velocity Agent  (Redis sliding windows)
-    POST /geo/evaluate        Geo Agent       (Redis + Postgres, travel + device)
-    POST /graph/evaluate      Graph Agent     (Neo4j account network)
-    GET  /health              per-agent connectivity
+    POST /velocity/evaluate          Velocity Agent  (Redis sliding windows)
+    POST /geo/evaluate               Geo Agent       (Redis + Postgres, travel + device)
+    POST /graph/evaluate             Graph Agent     (Neo4j account network)
+    POST /agents/behavior/evaluate   Behavior Agent  (XGBoost + IsoForest + LSTM ensemble)
+    GET  /health                     per-agent connectivity
 
 Each agent owns its own backing store; a store being down yields a 503 from
 that agent's endpoint only (never a fabricated score) — the others keep serving.
@@ -45,6 +46,17 @@ from agents.graph_agent import (  # noqa: E402
     get_driver,
     graph_counts,
 )
+from agents.behavior_agent import (  # noqa: E402
+    AllModelsFailedError,
+    BehaviorAgent,
+    ModelMissingError,
+)
+from agents.behavior_agent import (  # noqa: E402
+    PostgresUnavailableError as BehaviorPostgresUnavailableError,
+)
+from agents.behavior_agent import (  # noqa: E402
+    TxnNotFoundError as BehaviorTxnNotFoundError,
+)
 from agents.velocity_agent import RedisUnavailableError, VelocityAgent  # noqa: E402
 from shared.schemas.transaction import TransactionEvent  # noqa: E402
 
@@ -60,7 +72,9 @@ app = FastAPI(
 # Agents are created eagerly (cheap) and connected on startup.
 velocity_agent = VelocityAgent()
 geo_agent = GeoAgent()
+behavior_agent = BehaviorAgent()
 app.state.graph_driver = None
+app.state.behavior_model_error = None
 
 
 @app.on_event("startup")
@@ -78,12 +92,21 @@ async def startup() -> None:
                     NEO4J_DATABASE, nodes, rels)
     except Exception as exc:
         logger.warning("Graph Agent could not connect at startup: %s", exc)
+    try:
+        await behavior_agent.connect()
+        logger.info("✅ Behavior Agent ready (3 models preloaded, asyncpg pool open)")
+    except ModelMissingError as exc:
+        app.state.behavior_model_error = str(exc)
+        logger.warning("Behavior Agent: model artifacts missing: %s", exc)
+    except BehaviorPostgresUnavailableError as exc:
+        logger.warning("Behavior Agent: postgres unavailable at startup: %s", exc)
     logger.info("✅ Velocity Agent ready (Redis, lazy connect)")
 
 
 @app.on_event("shutdown")
 async def shutdown() -> None:
     await geo_agent.close()
+    await behavior_agent.close()
     if app.state.graph_driver is not None:
         app.state.graph_driver.close()
 
@@ -111,6 +134,17 @@ async def health() -> dict[str, object]:
         agents["graph"] = "ok"
     except Exception as exc:  # noqa: BLE001
         agents["graph"] = f"unavailable: {type(exc).__name__}"
+    if app.state.behavior_model_error is not None:
+        agents["behavior"] = f"models missing: {app.state.behavior_model_error}"
+    elif behavior_agent.pg_pool is None:
+        agents["behavior"] = "unavailable: postgres not connected"
+    else:
+        try:
+            async with behavior_agent.pg_pool.acquire() as conn:
+                await conn.fetchval("SELECT 1")
+            agents["behavior"] = "ok"
+        except Exception as exc:  # noqa: BLE001
+            agents["behavior"] = f"unavailable: {type(exc).__name__}"
     status = "ok" if all(v == "ok" for v in agents.values()) else "degraded"
     return {"service": "fraud-detection-api", "status": status, "agents": agents}
 
@@ -235,4 +269,56 @@ async def evaluate_graph(body: GraphRequest) -> GraphResponse:
         reasons=result["reasons"],
         signals=result["signals"],
         latency_ms=round((time.monotonic() - started) * 1000, 3),
+    )
+
+
+# -- behavior --------------------------------------------------------------------
+
+
+class BehaviorRequest(BaseModel):
+    account_id: str = Field(..., min_length=1)
+    txn_id: str = Field(..., min_length=1)
+
+
+class BehaviorResponse(BaseModel):
+    txn_id: str
+    account_id: str
+    agent_name: str = "behavior-agent"
+    risk_score: float = Field(..., ge=0.0, le=1.0)
+    confidence: float = Field(..., ge=0.0, le=1.0)
+    weights_profile: str
+    history_count: int
+    model_breakdown: dict
+    latency_ms: float = Field(..., ge=0.0)
+
+
+@app.post("/agents/behavior/evaluate", response_model=BehaviorResponse)
+async def evaluate_behavior(body: BehaviorRequest) -> BehaviorResponse:
+    if app.state.behavior_model_error is not None:
+        raise HTTPException(
+            status_code=503,
+            detail=f"behavior agent: model artifacts missing "
+                   f"({app.state.behavior_model_error})")
+    if behavior_agent.pg_pool is None:
+        raise HTTPException(status_code=503, detail="behavior agent: postgres unavailable")
+    try:
+        verdict, latency_ms = await behavior_agent.evaluate_timed(
+            body.account_id, body.txn_id)
+    except BehaviorTxnNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from None
+    except AllModelsFailedError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    except BehaviorPostgresUnavailableError as exc:
+        logger.error("Behavior Postgres unavailable for %s: %s", body.txn_id, exc)
+        raise HTTPException(
+            status_code=503, detail="behavior agent: postgres unavailable") from None
+    return BehaviorResponse(
+        txn_id=body.txn_id,
+        account_id=body.account_id,
+        risk_score=verdict.risk_score,
+        confidence=verdict.confidence,
+        weights_profile=verdict.weights_profile,
+        history_count=verdict.history_count,
+        model_breakdown=verdict.model_breakdown,
+        latency_ms=round(latency_ms, 3),
     )
