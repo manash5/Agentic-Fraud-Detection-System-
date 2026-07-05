@@ -2,82 +2,69 @@
 
 import * as React from "react";
 import { useRouter } from "next/navigation";
-import { AnimatePresence, motion } from "framer-motion";
-import { ArrowLeft, Loader2, Phone, ShieldCheck, X } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
+import { motion } from "framer-motion";
+import {
+  ArrowRight,
+  CheckCircle2,
+  Loader2,
+  ShieldAlert,
+  ShieldCheck,
+  ShieldQuestion,
+} from "lucide-react";
 import { toast } from "sonner";
 import { Brand } from "@/components/shared/brand";
 import { ThemeToggle } from "@/components/theme-toggle";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { BiometricPrompt } from "@/features/auth/biometric-prompt";
-import { MpinKeypad } from "@/features/auth/mpin-keypad";
-import { loginWithBiometric, loginWithMpin } from "@/services/authService";
-import { DEMO_CREDENTIALS, db } from "@/mock/db";
-import { setAuthUser } from "@/lib/auth";
+import { getDemoProfiles, loginWithProfile } from "@/services/authService";
 import { ApiError } from "@/services/http";
 import { initials } from "@/lib/format";
+import { cn } from "@/lib/utils";
+import type { DemoProfile } from "@/lib/auth";
 
-type Step = "mobile" | "pin" | "biometric";
+const EXPECTED_META: Record<
+  DemoProfile["expected"],
+  { icon: typeof ShieldCheck; label: string; className: string; dot: string }
+> = {
+  PASS: {
+    icon: ShieldCheck,
+    label: "",
+    className: "text-success",
+    dot: "",
+  },
+  OTP: {
+    icon: ShieldQuestion,
+    label: "OTP step-up",
+    className: "text-warning",
+    dot: "bg-warning",
+  },
+  BLOCK: {
+    icon: ShieldAlert,
+    label: "Blocked",
+    className: "text-destructive",
+    dot: "bg-destructive",
+  },
+};
 
 export function LoginView() {
   const router = useRouter();
-  const [step, setStep] = React.useState<Step>("mobile");
-  const [mobile, setMobile] = React.useState("");
-  const [pin, setPin] = React.useState("");
-  const [pinError, setPinError] = React.useState(false);
-  const [loading, setLoading] = React.useState(false);
+  const [pending, setPending] = React.useState<string | null>(null);
+  const { data: profiles, isLoading, isError, refetch } = useQuery({
+    queryKey: ["demo-profiles"],
+    queryFn: getDemoProfiles,
+  });
 
-  const knownCustomer =
-    mobile.trim() === DEMO_CREDENTIALS.mobile
-      ? db.customers.find((c) => c.mobile === DEMO_CREDENTIALS.mobile)
-      : undefined;
-
-  const onContinue = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (mobile.trim().length < 10) {
-      toast.error("Enter a valid 10-digit mobile number");
-      return;
-    }
-    setStep("pin");
-  };
-
-  const finishLogin = (user: Awaited<ReturnType<typeof loginWithMpin>>) => {
-    setAuthUser(user);
-    toast.success(`Welcome back, ${user.name.split(" ")[0]}`);
-    router.push("/dashboard");
-  };
-
-  const onPinComplete = async (value: string) => {
-    setLoading(true);
+  const pick = async (profile: DemoProfile) => {
+    setPending(profile.id);
     try {
-      const user = await loginWithMpin(mobile, value);
-      finishLogin(user);
+      await loginWithProfile(profile.id);
+      toast.success(`Signed in as ${profile.name}`);
+      router.push("/dashboard");
     } catch (err) {
-      setPinError(true);
-      toast.error(err instanceof ApiError ? err.message : "Login failed.");
-      setTimeout(() => {
-        setPin("");
-        setPinError(false);
-      }, 400);
-    } finally {
-      setLoading(false);
+      toast.error(
+        err instanceof ApiError ? err.message : "Could not sign in. Try again.",
+      );
+      setPending(null);
     }
-  };
-
-  const onBiometricSuccess = async () => {
-    try {
-      const user = await loginWithBiometric();
-      finishLogin(user);
-    } catch {
-      toast.error("Biometric login failed. Try your mPIN instead.");
-      setStep("pin");
-    }
-  };
-
-  const fillDemo = () => {
-    setMobile(DEMO_CREDENTIALS.mobile);
-    toast.info(`Demo mPIN is ${DEMO_CREDENTIALS.mpin}`);
   };
 
   return (
@@ -98,15 +85,15 @@ export function LoginView() {
             Smart banking, secured in real time.
           </h1>
           <p className="text-sidebar-foreground/70">
-            Transfer funds, pay bills, and manage your accounts with bank-grade
-            security — protected by continuous fraud monitoring on every
-            transaction.
+            Pick a demo profile to see the fraud-detection pipeline decide a
+            live transaction — cleared, challenged with OTP, or blocked — end to
+            end.
           </p>
           <div className="grid grid-cols-3 gap-4 pt-4">
             {[
-              { k: "99.98%", v: "Uptime" },
-              { k: "<800ms", v: "Processing" },
-              { k: "24/7", v: "Support" },
+              { k: "4", v: "AI Agents" },
+              { k: "<800ms", v: "Decision" },
+              { k: "Live", v: "Kafka" },
             ].map((s) => (
               <div key={s.v}>
                 <div className="text-2xl font-semibold text-white">{s.k}</div>
@@ -123,169 +110,117 @@ export function LoginView() {
         </div>
       </div>
 
-      {/* Form panel */}
+      {/* Profile picker */}
       <div className="relative flex items-center justify-center p-6 sm:p-12">
         <div className="absolute right-6 top-6 flex items-center gap-2">
           <ThemeToggle />
         </div>
-        <div className="w-full max-w-sm">
+        <div className="w-full max-w-md">
           <div className="mb-8 lg:hidden">
             <Brand />
           </div>
 
-          <AnimatePresence mode="wait">
-            {step === "mobile" && (
-              <motion.div
-                key="mobile"
-                initial={{ opacity: 0, x: -12 }}
-                animate={{ opacity: 1, x: 0 }}
-                exit={{ opacity: 0, x: -12 }}
-                transition={{ duration: 0.25 }}
-              >
-                <h2 className="text-2xl font-semibold tracking-tight">
-                  Log in to GIMEBiz
-                </h2>
-                <p className="mt-1.5 text-sm text-muted-foreground">
-                  Enter your registered mobile number to continue.
+          <h2 className="text-2xl font-semibold tracking-tight">
+            Choose a profile
+          </h2>
+          <p className="mt-1.5 text-sm text-muted-foreground">
+            Each profile logs in instantly and pre-loads a transaction that
+            exercises a different fraud outcome.
+          </p>
+
+          <div className="mt-8 space-y-3">
+            {isLoading &&
+              Array.from({ length: 3 }).map((_, i) => (
+                <div
+                  key={i}
+                  className="h-[92px] animate-pulse rounded-xl border bg-muted/40"
+                />
+              ))}
+
+            {isError && (
+              <div className="rounded-xl border border-destructive/30 bg-destructive/5 p-4 text-sm">
+                <p className="font-medium text-destructive">
+                  Couldn&apos;t reach the backend.
                 </p>
-
-                <form onSubmit={onContinue} className="mt-8 space-y-4">
-                  <div className="space-y-1.5">
-                    <Label htmlFor="mobile">Mobile Number</Label>
-                    <div className="relative">
-                      <Phone className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                      <Input
-                        id="mobile"
-                        inputMode="numeric"
-                        className="pl-9"
-                        placeholder="98xxxxxxxx"
-                        maxLength={10}
-                        value={mobile}
-                        onChange={(e) =>
-                          setMobile(e.target.value.replace(/\D/g, "").slice(0, 10))
-                        }
-                        autoFocus
-                      />
-                    </div>
-                  </div>
-
-                  <Button type="submit" size="lg" className="w-full">
-                    Continue
-                  </Button>
-                </form>
-
-                <button
-                  onClick={fillDemo}
-                  className="mt-4 w-full rounded-lg border border-dashed border-border bg-muted/40 p-3 text-left text-xs text-muted-foreground transition-colors hover:bg-muted"
-                >
-                  <span className="font-medium text-foreground">
-                    Demo access
-                  </span>{" "}
-                  — click to autofill. mPIN is{" "}
-                  <span className="font-mono font-semibold text-primary">
-                    {DEMO_CREDENTIALS.mpin}
-                  </span>
-                </button>
-
-                <p className="mt-6 text-center text-xs text-muted-foreground">
-                  Bank staff?{" "}
-                  <a
-                    href="/admin"
+                <p className="mt-1 text-muted-foreground">
+                  Make sure the API is running, then{" "}
+                  <button
+                    onClick={() => refetch()}
                     className="font-medium text-primary hover:underline"
                   >
-                    Open Admin Portal
-                  </a>
+                    retry
+                  </button>
+                  .
                 </p>
-              </motion.div>
+              </div>
             )}
 
-            {step === "pin" && (
-              <motion.div
-                key="pin"
-                initial={{ opacity: 0, x: 12 }}
-                animate={{ opacity: 1, x: 0 }}
-                exit={{ opacity: 0, x: 12 }}
-                transition={{ duration: 0.25 }}
-              >
-                <div className="mb-6 flex items-center justify-between">
-                  <button
-                    onClick={() => {
-                      setStep("mobile");
-                      setPin("");
-                    }}
-                    className="flex h-9 w-9 items-center justify-center rounded-full text-muted-foreground hover:bg-accent"
-                  >
-                    <ArrowLeft className="h-4 w-4" />
-                  </button>
-                </div>
-
-                <div className="flex flex-col items-center text-center">
-                  <div className="flex h-16 w-16 items-center justify-center rounded-full bg-primary text-lg font-semibold text-primary-foreground">
-                    {initials(knownCustomer?.name ?? "Global IME")}
-                  </div>
-                  <h2 className="mt-3 text-xl font-semibold tracking-tight">
-                    {knownCustomer
-                      ? `Hi, ${knownCustomer.name.split(" ")[0]}!`
-                      : "Enter your mPIN"}
-                  </h2>
-                  <p className="mt-1 text-sm text-muted-foreground">
-                    ••••••{mobile.slice(-4)}
-                  </p>
-                </div>
-
-                <div className="mt-8">
-                  <MpinKeypad
-                    value={pin}
-                    onChange={setPin}
-                    onComplete={onPinComplete}
-                    disabled={loading}
-                    error={pinError}
-                    onBiometric={() => setStep("biometric")}
-                  />
-                </div>
-
-                {loading && (
-                  <div className="mt-4 flex justify-center">
-                    <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
-                  </div>
-                )}
-
-                <button
-                  onClick={() => setStep("biometric")}
-                  className="mt-6 w-full text-center text-sm font-medium text-primary hover:underline"
+            {profiles?.map((profile, i) => {
+              const meta = EXPECTED_META[profile.expected];
+              const busy = pending === profile.id;
+              return (
+                <motion.button
+                  key={profile.id}
+                  initial={{ opacity: 0, y: 8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: i * 0.06 }}
+                  disabled={!!pending}
+                  onClick={() => pick(profile)}
+                  className={cn(
+                    "group flex w-full items-center gap-4 rounded-xl border bg-card p-4 text-left transition-all",
+                    "hover:border-primary/40 hover:shadow-sm disabled:opacity-60",
+                    busy && "border-primary/40",
+                  )}
                 >
-                  Use Face ID / Fingerprint instead
-                </button>
-              </motion.div>
-            )}
+                  <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-primary/10 text-sm font-semibold text-primary">
+                    {initials(profile.name)}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <span className="truncate text-sm font-semibold">
+                        {profile.name}
+                      </span>
+                      {/* <span
+                        className={cn(
+                          "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium",
+                          "bg-muted",
+                          meta.className,
+                        )}
+                      >
+                        <span className={cn("h-1.5 w-1.5 rounded-full", meta.dot)} />
+                        {meta.label}
+                      </span> */}
+                    </div>
+                    {/* <p className="mt-0.5 truncate text-xs text-muted-foreground">
+                      {profile.blurb}
+                    </p> */}
+                    <p className="mt-0.5 font-mono text-[10px] text-muted-foreground/70">
+                      {profile.accountId}
+                    </p>
+                  </div>
+                  {busy ? (
+                    <Loader2 className="h-5 w-5 shrink-0 animate-spin text-primary" />
+                  ) : (
+                    <ArrowRight className="h-5 w-5 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5 group-hover:text-primary" />
+                  )}
+                </motion.button>
+              );
+            })}
+          </div>
 
-            {step === "biometric" && (
-              <motion.div
-                key="biometric"
-                initial={{ opacity: 0, x: 12 }}
-                animate={{ opacity: 1, x: 0 }}
-                exit={{ opacity: 0, x: 12 }}
-                transition={{ duration: 0.25 }}
-              >
-                <div className="mb-2 flex items-center justify-between">
-                  <h2 className="text-xl font-semibold tracking-tight">
-                    Biometric Login
-                  </h2>
-                  <button
-                    onClick={() => setStep("pin")}
-                    className="flex h-9 w-9 items-center justify-center rounded-full text-muted-foreground hover:bg-accent"
-                  >
-                    <X className="h-4 w-4" />
-                  </button>
-                </div>
-                <BiometricPrompt
-                  label="Scan your face or fingerprint to continue"
-                  onSuccess={onBiometricSuccess}
-                  onCancel={() => setStep("pin")}
-                />
-              </motion.div>
-            )}
-          </AnimatePresence>
+          {/* <div className="mt-6 flex items-start gap-2 rounded-lg bg-muted/40 p-3 text-xs text-muted-foreground">
+
+          </div> */}
+
+          <p className="mt-6 text-center text-xs text-muted-foreground">
+            Bank staff?{" "}
+            <a
+              href="/admin"
+              className="font-medium text-primary hover:underline"
+            >
+              Open Admin Portal
+            </a>
+          </p>
         </div>
       </div>
     </div>

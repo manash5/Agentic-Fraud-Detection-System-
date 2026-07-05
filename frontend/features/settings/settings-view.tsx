@@ -15,11 +15,10 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
-import { useAuth } from "@/lib/auth";
+import { logout as logoutRequest } from "@/services/authService";
 
 export function SettingsView() {
   const router = useRouter();
-  const { setUser } = useAuth();
   const { theme, setTheme } = useTheme();
   const [mounted, setMounted] = React.useState(false);
   const [biometric, setBiometric] = React.useState(true);
@@ -29,8 +28,8 @@ export function SettingsView() {
   // eslint-disable-next-line react-hooks/set-state-in-effect
   React.useEffect(() => setMounted(true), []);
 
-  const logout = () => {
-    setUser(null);
+  const logout = async () => {
+    await logoutRequest().catch(() => undefined);
     router.replace("/login");
   };
 

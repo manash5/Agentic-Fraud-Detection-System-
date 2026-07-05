@@ -1,12 +1,12 @@
 "use client";
 
+import * as React from "react";
 import {
   Download,
   FileBarChart,
-  FileCheck2,
-  FileClock,
   FileSpreadsheet,
   FileWarning,
+  Loader2,
 } from "lucide-react";
 import { toast } from "sonner";
 import { PageHeader } from "@/components/admin/page-header";
@@ -14,54 +14,56 @@ import { SubmissionExportButton } from "@/features/admin/submission-export";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { useTransactions } from "@/hooks/useBanking";
+import { downloadReport } from "@/services/adminService";
 
 const reports = [
   {
+    key: "daily-summary",
     icon: FileBarChart,
     title: "Daily Transaction Summary",
-    desc: "Volume, count and channel breakdown for the day.",
-    freq: "Generated daily · 00:05",
+    desc: "Per-day volume, OTP challenges, blocks and average risk (last 14 days).",
   },
   {
+    key: "flagged-transactions",
     icon: FileWarning,
     title: "Fraud & Risk Report",
-    desc: "All flagged, OTP and blocked transactions with agent scores.",
-    freq: "Generated daily",
+    desc: "All OTP-challenged and blocked transactions with risk scores and types.",
   },
   {
-    icon: FileCheck2,
-    title: "AML / Suspicious Activity (STR)",
-    desc: "Structuring, money-laundering and ring patterns for NRB filing.",
-    freq: "Generated weekly",
-  },
-  {
+    key: "otp-events",
     icon: FileSpreadsheet,
     title: "OTP Challenge Log",
-    desc: "Dual-path OTP issuance, verification and expiry outcomes.",
-    freq: "Generated daily",
+    desc: "SMS OTP issuance, verification, expiry and lockout outcomes.",
   },
   {
-    icon: FileClock,
-    title: "System Performance Report",
-    desc: "Agent latency, uptime and detection-time percentiles.",
-    freq: "Generated weekly",
-  },
-  {
+    key: "model-verdicts",
     icon: FileBarChart,
-    title: "Customer Risk Register",
-    desc: "Risk ratings and KYC status across all customers.",
-    freq: "Generated monthly",
+    title: "Model Verdict Audit",
+    desc: "Every synthesis decision: scores, patterns, weights and agents used.",
   },
 ];
 
 export default function ReportsPage() {
   const { data: transactions } = useTransactions({ limit: 500 });
+  const [downloading, setDownloading] = React.useState<string | null>(null);
+
+  const download = async (key: string, title: string) => {
+    setDownloading(key);
+    try {
+      await downloadReport(key);
+      toast.success(`${title} downloaded`);
+    } catch {
+      toast.error(`Could not generate ${title}.`);
+    } finally {
+      setDownloading(null);
+    }
+  };
 
   return (
     <div>
       <PageHeader
         title="Reports"
-        description="Download regulatory and operational reports."
+        description="CSV exports generated live from the transaction ledger and audit tables."
       />
 
       <Card className="mb-4 border-primary/30 bg-primary/5">
@@ -79,9 +81,9 @@ export default function ReportsPage() {
         </CardContent>
       </Card>
 
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-2">
         {reports.map((r) => (
-          <Card key={r.title}>
+          <Card key={r.key}>
             <CardContent className="flex h-full flex-col p-5">
               <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 text-primary">
                 <r.icon className="h-5 w-5" />
@@ -90,25 +92,20 @@ export default function ReportsPage() {
               <p className="mt-1 flex-1 text-xs text-muted-foreground">
                 {r.desc}
               </p>
-              <div className="mt-3 text-[11px] text-muted-foreground">
-                {r.freq}
-              </div>
-              <div className="mt-3 flex gap-2">
+              <div className="mt-3">
                 <Button
                   variant="outline"
                   size="sm"
-                  className="flex-1"
-                  onClick={() => toast.success(`${r.title} downloaded (PDF)`)}
+                  className="w-full"
+                  disabled={downloading === r.key}
+                  onClick={() => download(r.key, r.title)}
                 >
-                  <Download className="h-3.5 w-3.5" /> PDF
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="flex-1"
-                  onClick={() => toast.success(`${r.title} downloaded (CSV)`)}
-                >
-                  <Download className="h-3.5 w-3.5" /> CSV
+                  {downloading === r.key ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Download className="h-3.5 w-3.5" />
+                  )}{" "}
+                  Download CSV
                 </Button>
               </div>
             </CardContent>

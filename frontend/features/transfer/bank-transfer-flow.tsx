@@ -30,29 +30,26 @@ import { BrandLogo } from "@/components/shared/brand-logo";
 import { AmountChips } from "./amount-chips";
 import { FlowHeader } from "./flow-header";
 import { ReviewRow, ReviewSheet } from "./review-sheet";
-import { runTransferPipeline } from "./run-transfer-pipeline";
 import { TransferBlocked } from "./transfer-blocked";
 import { TransferLoadingOverlay } from "./transfer-loading";
 import { TransferOtp } from "./transfer-otp";
+import { TransferProcessing } from "./transfer-processing";
 import { TransferReceipt } from "./transfer-receipt";
-import { TxnAuthStep } from "./txn-auth-step";
+import { otpTriggerReason, useTransferPhases } from "./use-transfer-phases";
+import { useTransferRun } from "./use-transfer-run";
 import { useAccounts } from "@/hooks/useBanking";
 import { useAuth } from "@/lib/auth";
 import { resolveRecipient } from "@/services/recipientService";
-import { commitTransfer } from "@/services/transferService";
-import { BANKS } from "@/mock/constants";
+import { ApiError } from "@/services/http";
+import { BANKS } from "@/lib/constants";
 import { formatNPR, maskAccount } from "@/lib/format";
 import { txnTypeForTransfer, txnTypeLabels } from "@/lib/trackb";
 import { cn } from "@/lib/utils";
 import type {
   Account,
-  FraudResult,
-  Transaction,
   TransferDestination,
   TransferRequest,
 } from "@/types/banking";
-
-type Phase = "form" | "otp" | "success" | "blocked";
 type BillMode = "bill" | undefined;
 
 const destinations: {
@@ -75,29 +72,43 @@ export function BankTransferFlow() {
   const params = useSearchParams();
   const { user } = useAuth();
   const { data: accounts } = useAccounts(user?.customerId);
-  const fromAccount = accounts?.find((a) => a.type === "savings");
+  // Honor an explicit prefill `from` account; otherwise the primary savings.
+  const fromParam = params.get("from");
+  const fromAccount =
+    (fromParam && accounts?.find((a) => a.id === fromParam)) ||
+    accounts?.find((a) => a.type === "savings") ||
+    accounts?.[0];
 
   const initialMode = params.get("mode") as BillMode | null;
-  const [step, setStep] = React.useState(0);
-  const [phase, setPhase] = React.useState<Phase>("form");
-  const [destIndex, setDestIndex] = React.useState(
-    initialMode === "bill" ? 3 : 1,
-  );
+  const isPrefill = params.get("prefill") === "1";
+  const initialDest = params.get("destination");
+  const initialDestIndex =
+    initialMode === "bill"
+      ? 3
+      : initialDest === "other_bank"
+        ? 2
+        : initialDest === "own"
+          ? 0
+          : 1;
+
+  const [step, setStep] = React.useState(isPrefill ? 2 : 0);
+  const [destIndex, setDestIndex] = React.useState(initialDestIndex);
   const destination = destinations[destIndex];
 
-  const [bank, setBank] = React.useState("Global IME Bank");
+  const [bank, setBank] = React.useState(
+    params.get("bank") ?? "Global IME Bank",
+  );
   const [account, setAccount] = React.useState(params.get("account") ?? "");
   const [recipientName, setRecipientName] = React.useState(params.get("name") ?? "");
   const [resolving, setResolving] = React.useState(false);
   const [ownTargetId, setOwnTargetId] = React.useState("");
-  const [amount, setAmount] = React.useState("");
-  const [remarks, setRemarks] = React.useState("");
+  const [amount, setAmount] = React.useState(params.get("amount") ?? "");
+  const [remarks, setRemarks] = React.useState(params.get("remarks") ?? "");
   const [reviewOpen, setReviewOpen] = React.useState(false);
-  const [authOpen, setAuthOpen] = React.useState(false);
   const [submitting, setSubmitting] = React.useState(false);
 
-  const [fraud, setFraud] = React.useState<FraudResult | null>(null);
-  const [committed, setCommitted] = React.useState<Transaction | null>(null);
+  const run = useTransferRun();
+  const { phase, committed } = useTransferPhases(run);
 
   const amountNum = Number(amount) || 0;
   const txnType = txnTypeForTransfer(destination.id, bank, destination.bill);
@@ -105,11 +116,12 @@ export function BankTransferFlow() {
   const otherOwnAccounts = accounts?.filter((a) => a.id !== fromAccount?.id) ?? [];
 
   React.useEffect(() => {
-    if (params.get("account") && params.get("name")) {
+    // Non-prefill deep link (e.g. from a favourite) lands on the Recipient step.
+    if (!isPrefill && params.get("account") && params.get("name")) {
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setStep(1);
     }
-  }, [params]);
+  }, [params, isPrefill]);
 
   const pickDestination = (i: number) => {
     setDestIndex(i);
@@ -166,34 +178,18 @@ export function BankTransferFlow() {
     setReviewOpen(true);
   };
 
-  const confirmReview = () => {
+  const confirmReview = async () => {
     setReviewOpen(false);
-    setAuthOpen(true);
-  };
-
-  const handleAuthSuccess = async () => {
-    setAuthOpen(false);
     setSubmitting(true);
     try {
-      const outcome = await runTransferPipeline(buildRequest());
-      setFraud(outcome.fraud);
-      if (outcome.kind === "blocked") setPhase("blocked");
-      else if (outcome.kind === "otp") setPhase("otp");
-      else {
-        setCommitted(outcome.txn);
-        setPhase("success");
-      }
-    } catch {
-      toast.error("Transfer failed. Please try again.");
+      await run.start(buildRequest());
+    } catch (err) {
+      toast.error(
+        err instanceof ApiError ? err.message : "Transfer failed. Please try again.",
+      );
     } finally {
       setSubmitting(false);
     }
-  };
-
-  const finalize = async (result: FraudResult) => {
-    const txn = await commitTransfer(buildRequest(), result);
-    setCommitted(txn);
-    setPhase("success");
   };
 
   if (!fromAccount) {
@@ -456,13 +452,22 @@ export function BankTransferFlow() {
           </motion.div>
         )}
 
-        {phase === "otp" && fraud && (
+        {phase === "processing" && (
+          <motion.div key="processing" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+            <FlowHeader title="Fund Transfer" onBack={() => undefined} />
+            <TransferProcessing amount={amountNum} recipient={recipientName} slow={run.timedOut} />
+          </motion.div>
+        )}
+
+        {phase === "otp" && run.txnId && (
           <motion.div key="otp" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
             <TransferOtp
+              txnId={run.txnId}
               amount={amountNum}
               recipient={recipientName}
-              triggerReason={otpTriggerReason(fraud)}
-              onVerified={() => finalize(fraud)}
+              otp={run.status?.otp ?? null}
+              triggerReason={otpTriggerReason(run.status)}
+              onVerified={run.markVerified}
               onCancel={() => router.push("/dashboard")}
             />
           </motion.div>
@@ -474,9 +479,12 @@ export function BankTransferFlow() {
           </motion.div>
         )}
 
-        {phase === "blocked" && fraud && (
+        {phase === "blocked" && (
           <motion.div key="blocked" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-            <TransferBlocked reference={fraud.reference} onDone={() => router.push("/dashboard")} />
+            <TransferBlocked
+              reference={run.status?.fraud?.reference ?? run.status?.txn?.reference ?? run.txnId ?? ""}
+              onDone={() => router.push("/dashboard")}
+            />
           </motion.div>
         )}
       </AnimatePresence>
@@ -496,30 +504,7 @@ export function BankTransferFlow() {
         <ReviewRow label="Fee" value={formatNPR(fee)} />
         <ReviewRow label="Amount" value={formatNPR(amountNum)} strong />
       </ReviewSheet>
-
-      <TxnAuthStep
-        open={authOpen}
-        amountLabel={`Sending ${formatNPR(amountNum)} to ${recipientName}`}
-        onSuccess={handleAuthSuccess}
-        onCancel={() => setAuthOpen(false)}
-      />
     </div>
   );
 }
 
-function otpTriggerReason(fraud: FraudResult): string | undefined {
-  const { agents, synthesis: s } = fraud.analysis;
-  if (s.disagreement >= 0.04) return "AGENT_DISAGREEMENT_FORCE_OTP";
-  const top = [...agents].sort((a, b) => b.risk - a.risk)[0];
-  if (!top) return undefined;
-  switch (top.agent) {
-    case "geo":
-      return "IMPOSSIBLE_TRAVEL_DETECTED";
-    case "velocity":
-      return "VELOCITY_THRESHOLD_EXCEEDED";
-    case "graph":
-      return "FRAUD_RING_PROXIMITY";
-    default:
-      return "BEHAVIOURAL_ANOMALY_DETECTED";
-  }
-}

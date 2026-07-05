@@ -61,11 +61,33 @@ backend/
 ### Prerequisites
 
 - Postgres (`fraud_detection_global`) with reference tables loaded
-- Redis (velocity + geo)
+- Redis (velocity + geo + sessions/OTP/txn-state)
 - Neo4j (`fraud-detection` database, graph loaded)
-- Kafka on `localhost:9092` (only for async `/pipeline/submit` path)
+- Kafka on `localhost:9092` (required for the live transfer pipeline)
+- `backend/.env` filled in (Neo4j creds, `FRAUD_*`, `EASYSENDSMS_API_KEY` or
+  `OTP_DEV_MODE=1`, `DEMO_USER_MOBILE`)
 
-### Start the unified API
+### Full integrated system (frontend + backend)
+
+```bash
+cd backend
+uv sync
+uv run python -m scripts.seed_app_data   # once: app tables, demo user, Redis warm-up,
+                                         # real-pipeline backfill of history (~3 min)
+uv run uvicorn app.main:app --port 8000  # terminal A — API + state projector
+uv run python -m kafka_bus.orchestrator  # terminal B — Kafka agent orchestrator
+cd ../frontend && npm run dev            # terminal C — Next.js on :3000
+```
+
+Log in at http://localhost:3000 with mobile `9801234567` / mPIN `1234`
+(demo account `ACC-1207531`). Every submitted transfer flows
+`POST /transfer -> Kafka fraud-events -> orchestrator (4 agents + synthesis)
+-> state projector -> Redis txn state`, which the UI polls live. An OTP
+decision sends a real SMS via EasySendSMS (or logs a `devCode` in
+`OTP_DEV_MODE`). Live rows are flagged `transactions_raw.source='live'`
+(`DELETE FROM transactions_raw WHERE source='live'` restores dataset purity).
+
+### Start the unified API only
 
 ```bash
 cd backend

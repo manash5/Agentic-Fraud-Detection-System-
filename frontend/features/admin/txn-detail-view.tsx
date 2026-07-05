@@ -5,7 +5,9 @@ import {
   Clock,
   Fingerprint,
   Globe,
+  Loader2,
   MapPin,
+  ShieldOff,
   Smartphone,
   User,
 } from "lucide-react";
@@ -17,15 +19,16 @@ import {
   SynthesisGauge,
 } from "./fraud-analysis";
 import { NetworkGraph } from "./network-graph";
+import { useAdminCustomer, useModelVerdict } from "@/hooks/useAdmin";
 import { formatDateTime, formatNPR, relativeTime } from "@/lib/format";
-import { channelLabels, fraudTypeLabels, toModelVerdict, txnTypeLabels } from "@/lib/trackb";
+import { channelLabels, fraudTypeLabels, txnTypeLabels } from "@/lib/trackb";
 import { typeLabels } from "@/lib/risk";
 import { cn } from "@/lib/utils";
-import { db } from "@/mock/db";
 import type { Transaction } from "@/types/banking";
 
 export function TxnDetailView({ txn }: { txn: Transaction }) {
-  const customer = db.customers.find((c) => c.id === txn.customerId);
+  const { data: customer } = useAdminCustomer(txn.customerId);
+  const { data: verdict, isLoading: verdictLoading } = useModelVerdict(txn.id);
 
   return (
     <div>
@@ -39,7 +42,7 @@ export function TxnDetailView({ txn }: { txn: Transaction }) {
         <DecisionBadge
           decision={txn.decision}
           trackB
-          forcedByDisagreement={txn.fraud.synthesis.disagreement >= 0.04}
+          forcedByDisagreement={(txn.fraud?.synthesis.disagreement ?? 0) >= 0.04}
         />
       </div>
 
@@ -80,7 +83,7 @@ export function TxnDetailView({ txn }: { txn: Transaction }) {
           <div className="grid grid-cols-3 gap-3">
             <MiniStat label="Risk Score" value={txn.riskScore.toFixed(2)} />
             <MiniStat label="Decision" value={txn.decision} />
-            <MiniStat label="Latency" value={`${txn.latencyMs}ms`} />
+            <MiniStat label="Latency" value={`${Math.round(txn.latencyMs)}ms`} />
           </div>
 
           <div className="rounded-lg border p-4">
@@ -130,16 +133,22 @@ export function TxnDetailView({ txn }: { txn: Transaction }) {
         </TabsContent>
 
         <TabsContent value="fraud" className="mt-4 space-y-4">
-          <div>
-            <h3 className="mb-2 text-sm font-semibold">Risk Model Assessment</h3>
-            <AgentCards agents={txn.fraud.agents} synthesis={txn.fraud.synthesis} />
-          </div>
-          <div>
-            <h3 className="mb-2 text-sm font-semibold">Synthesis</h3>
-            <SynthesisGauge synthesis={txn.fraud.synthesis} />
-          </div>
-          <ShapChart shap={txn.fraud.shap} />
-          <NetworkGraph txn={txn} />
+          {txn.fraud ? (
+            <>
+              <div>
+                <h3 className="mb-2 text-sm font-semibold">Risk Model Assessment</h3>
+                <AgentCards agents={txn.fraud.agents} synthesis={txn.fraud.synthesis} />
+              </div>
+              <div>
+                <h3 className="mb-2 text-sm font-semibold">Synthesis</h3>
+                <SynthesisGauge synthesis={txn.fraud.synthesis} />
+              </div>
+              <ShapChart shap={txn.fraud.shap} />
+              <NetworkGraph txn={txn} />
+            </>
+          ) : (
+            <EmptyAnalysis />
+          )}
         </TabsContent>
 
         <TabsContent value="timeline" className="mt-4">
@@ -147,11 +156,34 @@ export function TxnDetailView({ txn }: { txn: Transaction }) {
         </TabsContent>
 
         <TabsContent value="audit" className="mt-4">
-          <pre className="overflow-x-auto rounded-lg border bg-muted/40 p-4 font-mono text-[11px] leading-relaxed text-muted-foreground">
-            {JSON.stringify(toModelVerdict(txn), null, 2)}
-          </pre>
+          {verdictLoading ? (
+            <div className="flex h-32 items-center justify-center">
+              <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+            </div>
+          ) : verdict ? (
+            <pre className="overflow-x-auto rounded-lg border bg-muted/40 p-4 font-mono text-[11px] leading-relaxed text-muted-foreground">
+              {JSON.stringify(verdict, null, 2)}
+            </pre>
+          ) : (
+            <p className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">
+              No synthesis audit record exists for this transaction.
+            </p>
+          )}
         </TabsContent>
       </Tabs>
+    </div>
+  );
+}
+
+function EmptyAnalysis() {
+  return (
+    <div className="flex flex-col items-center rounded-lg border border-dashed p-10 text-center">
+      <ShieldOff className="mb-3 h-8 w-8 text-muted-foreground" />
+      <p className="text-sm font-medium">No AI analysis recorded</p>
+      <p className="mt-1 max-w-sm text-xs text-muted-foreground">
+        This transaction predates the live fraud pipeline, so no agent verdicts
+        were captured for it.
+      </p>
     </div>
   );
 }
@@ -228,16 +260,38 @@ function DetailRow({
   );
 }
 
+const AGENT_TIMELINE_META: Record<string, { icon: typeof Clock; label: string }> = {
+  velocity: { icon: Clock, label: "Velocity agent evaluated" },
+  geo: { icon: MapPin, label: "Geo agent evaluated" },
+  behavior: { icon: CheckCircle2, label: "Behaviour model scored" },
+  graph: { icon: CheckCircle2, label: "Graph agent evaluated" },
+};
+
 function Timeline({ txn }: { txn: Transaction }) {
-  const steps = [
+  const steps: { icon: typeof Globe; label: string; detail: string; ms: number }[] = [
     { icon: Globe, label: "Transaction initiated", detail: `${txn.channel.toUpperCase()} · ${txn.location.city}`, ms: 0 },
     { icon: Fingerprint, label: "Identity & device check", detail: txn.device, ms: 40 },
-    { icon: Clock, label: "Velocity agent evaluated", detail: `Score ${txn.fraud.agents[0].risk.toFixed(2)}`, ms: 120 },
-    { icon: MapPin, label: "Geo agent evaluated", detail: `Score ${txn.fraud.agents[1].risk.toFixed(2)}`, ms: 170 },
-    { icon: CheckCircle2, label: "Behaviour model scored", detail: `Score ${txn.fraud.agents[2].risk.toFixed(2)}`, ms: 230 },
-    { icon: CheckCircle2, label: "Graph agent evaluated", detail: `Score ${txn.fraud.agents[3].risk.toFixed(2)}`, ms: 290 },
-    { icon: CheckCircle2, label: `Decision: ${txn.decision}`, detail: `Final ${txn.riskScore.toFixed(2)}`, ms: txn.latencyMs },
   ];
+  let elapsed = 40;
+  for (const agent of txn.fraud?.agents ?? []) {
+    const meta = AGENT_TIMELINE_META[agent.agent] ?? {
+      icon: CheckCircle2,
+      label: `${agent.agent} agent evaluated`,
+    };
+    elapsed += Math.max(Math.round(agent.inferenceMs), 10);
+    steps.push({
+      icon: meta.icon,
+      label: meta.label,
+      detail: `Score ${agent.risk.toFixed(2)}`,
+      ms: elapsed,
+    });
+  }
+  steps.push({
+    icon: CheckCircle2,
+    label: `Decision: ${txn.decision}`,
+    detail: `Final ${txn.riskScore.toFixed(2)}`,
+    ms: Math.max(Math.round(txn.latencyMs), elapsed),
+  });
   return (
     <div className="relative space-y-1 pl-2">
       {steps.map((s, i) => (

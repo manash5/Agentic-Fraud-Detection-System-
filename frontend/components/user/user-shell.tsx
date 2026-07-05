@@ -35,6 +35,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useAuth } from "@/lib/auth";
+import { logout as logoutRequest } from "@/services/authService";
 import { useBalanceVisibility } from "@/lib/balance-visibility";
 import { initials } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -49,22 +50,22 @@ const nav = [
 export function UserShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
-  const { user, setUser } = useAuth();
+  const { user } = useAuth();
   const { isVisible, toggle } = useBalanceVisibility();
   const [ready, setReady] = React.useState(false);
 
   React.useEffect(() => {
     const raw =
       typeof window !== "undefined"
-        ? localStorage.getItem("gime-auth-user")
+        ? localStorage.getItem("gime-auth-session")
         : null;
     if (!raw) router.replace("/login");
     // eslint-disable-next-line react-hooks/set-state-in-effect
     else setReady(true);
   }, [router]);
 
-  const logout = () => {
-    setUser(null);
+  const logout = async () => {
+    await logoutRequest().catch(() => undefined);
     router.replace("/login");
   };
 

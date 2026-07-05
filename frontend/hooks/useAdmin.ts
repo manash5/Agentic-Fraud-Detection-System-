@@ -2,6 +2,9 @@
 
 import { useQuery } from "@tanstack/react-query";
 import {
+  getAdminCustomer,
+  getAdminTransaction,
+  getAdminTransactions,
   getAllAccounts,
   getAllCustomers,
   getDashboardStats,
@@ -13,6 +16,30 @@ import {
   getTrends,
 } from "@/services/adminService";
 import { getBaselineComparison, getModelVerdict } from "@/services/verdictService";
+import type { TransactionFilters } from "@/services/transactionService";
+
+export function useAdminTransactions(filters: TransactionFilters = {}) {
+  return useQuery({
+    queryKey: ["admin", "transactions", filters],
+    queryFn: () => getAdminTransactions(filters),
+  });
+}
+
+export function useAdminTransaction(txnId?: string) {
+  return useQuery({
+    queryKey: ["admin", "transaction", txnId],
+    queryFn: () => getAdminTransaction(txnId!),
+    enabled: !!txnId,
+  });
+}
+
+export function useAdminCustomer(customerId?: string) {
+  return useQuery({
+    queryKey: ["admin", "customer", customerId],
+    queryFn: () => getAdminCustomer(customerId!),
+    enabled: !!customerId,
+  });
+}
 
 export function useDashboardStats() {
   return useQuery({ queryKey: ["admin", "stats"], queryFn: getDashboardStats });

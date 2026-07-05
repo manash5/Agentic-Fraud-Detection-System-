@@ -1,0 +1,22 @@
+# Per-Dockerfile ignore (BuildKit reads <dockerfile>.dockerignore).
+# Patterns are relative to the build context = repo ROOT.
+# The backend image only needs backend/ source + models; everything else is
+# excluded so the build context stays small and fast.
+
+.git
+.claude
+frontend
+PROJECT_OVERVIEW.md
+README.md
+
+# Backend: keep source + models/, drop caches, envs, and the huge data dirs.
+backend/.venv
+backend/__pycache__
+backend/**/__pycache__
+backend/.pytest_cache
+backend/datasets
+backend/datasets_processed
+backend/mlruns
+backend/notebooks
+backend/.env
+backend/transactions_logs.json

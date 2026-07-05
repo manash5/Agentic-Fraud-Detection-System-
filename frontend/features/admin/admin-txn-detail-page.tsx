@@ -4,11 +4,11 @@ import { useRouter } from "next/navigation";
 import { ArrowLeft, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { TxnDetailView } from "@/features/admin/txn-detail-view";
-import { useTransaction } from "@/hooks/useBanking";
+import { useAdminTransaction } from "@/hooks/useAdmin";
 
 export function AdminTxnDetailPage({ txnId }: { txnId: string }) {
   const router = useRouter();
-  const { data: txn, isLoading } = useTransaction(txnId);
+  const { data: txn, isLoading } = useAdminTransaction(txnId);
 
   return (
     <div className="space-y-6">

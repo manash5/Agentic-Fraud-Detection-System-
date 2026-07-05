@@ -14,7 +14,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { useTransactions } from "@/hooks/useBanking";
+import { useAdminTransactions } from "@/hooks/useAdmin";
 import type { TransactionType } from "@/types/banking";
 
 export function AdminTransactionsView() {
@@ -22,7 +22,7 @@ export function AdminTransactionsView() {
   const [type, setType] = React.useState<TransactionType | "all">("all");
   const [decision, setDecision] = React.useState("all");
 
-  const { data, isLoading } = useTransactions({
+  const { data, isLoading } = useAdminTransactions({
     search: search || undefined,
     type,
     decision,

@@ -1,0 +1,16 @@
+# Per-Dockerfile ignore (BuildKit reads <dockerfile>.dockerignore).
+# Patterns are relative to the build context = repo ROOT.
+# The frontend image only needs frontend/ source; the backend tree (2GB+ of
+# datasets/models/venv) is excluded entirely.
+
+.git
+.claude
+backend
+PROJECT_OVERVIEW.md
+README.md
+
+# Frontend: source only — deps are reinstalled with `npm ci` in the image.
+frontend/node_modules
+frontend/.next
+frontend/.env*
+frontend/npm-debug.log*

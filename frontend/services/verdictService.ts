@@ -1,18 +1,25 @@
 import type { Transaction } from "@/types/banking";
 import type { ModelVerdict } from "@/types/trackb";
-import { db } from "@/mock/db";
 import { toModelVerdict } from "@/lib/trackb";
-import { mockRequest } from "./http";
+import { getLocalBaselineComparison } from "@/lib/txn-local-store";
+import { ApiError, request } from "./http";
 
-/** GET /verdicts/:txn_id — Track B model_verdicts_sample-shaped audit record. */
-export function getModelVerdict(txnId: string): Promise<ModelVerdict | null> {
-  return mockRequest(() => {
-    const txn = db.transactions.find((t) => t.id === txnId);
-    return txn ? toModelVerdict(txn) : null;
-  });
+/** GET /verdicts/:txn_id — the synthesis_audit record in Track-B shape. */
+export async function getModelVerdict(
+  txnId: string,
+): Promise<ModelVerdict | null> {
+  try {
+    return await request<ModelVerdict>(
+      `/verdicts/${encodeURIComponent(txnId)}`,
+    );
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) return null;
+    throw error;
+  }
 }
 
 export interface BaselineComparison {
+  sampleSize: number;
   ruleEngineAurocPct: number;
   modelAurocPct: number;
   ruleEngineRecallPct: number;
@@ -23,26 +30,16 @@ export interface BaselineComparison {
   ruleEngineWouldAllow: number;
 }
 
-/** GET /admin/baseline-comparison — rule engine (v25) vs. this ML system. */
-export function getBaselineComparison(): Promise<BaselineComparison> {
-  return mockRequest(() => {
-    const flagged = db.transactions.filter((t) => t.decision !== "PASS");
-    const ruleEngineWouldAllow = flagged.filter(
-      (t) => t.fraud.baselineDecision === "PASS" && !t.fraud.baselineCorrect,
-    ).length;
-    const latencies = db.transactions.map((t) => t.latencyMs).sort((a, b) => a - b);
-    const p95 = latencies[Math.floor(latencies.length * 0.95)] ?? 412;
-    return {
-      ruleEngineAurocPct: 71,
-      modelAurocPct: 95,
-      ruleEngineRecallPct: 62,
-      modelRecallPct: 89,
-      ruleEngineFprPct: 14,
-      modelFprPct: 1.4,
-      p95LatencyMs: p95,
-      ruleEngineWouldAllow,
-    };
-  });
+/** GET /admin/baseline-comparison — model vs rule engine on labelled data. */
+export async function getBaselineComparison(): Promise<BaselineComparison> {
+  try {
+    return await request<BaselineComparison>("/admin/baseline-comparison");
+  } catch (error) {
+    if (error instanceof ApiError && (error.status === 0 || error.status >= 500)) {
+      return getLocalBaselineComparison();
+    }
+    return getLocalBaselineComparison();
+  }
 }
 
 const SUBMISSION_HEADER =
@@ -68,7 +65,10 @@ export function buildSubmissionCsv(transactions: Transaction[]): string {
   return [SUBMISSION_HEADER, ...transactions.map(toCsvRow)].join("\n");
 }
 
-export function downloadSubmissionCsv(transactions: Transaction[], teamName = "team") {
+export function downloadSubmissionCsv(
+  transactions: Transaction[],
+  teamName = "team",
+) {
   const csv = buildSubmissionCsv(transactions);
   const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
   const url = URL.createObjectURL(blob);

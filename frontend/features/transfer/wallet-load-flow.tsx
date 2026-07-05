@@ -13,18 +13,19 @@ import { BrandLogo, type BrandLogoId } from "@/components/shared/brand-logo";
 import { AmountChips } from "./amount-chips";
 import { FlowHeader } from "./flow-header";
 import { ReviewRow, ReviewSheet } from "./review-sheet";
-import { runTransferPipeline } from "./run-transfer-pipeline";
 import { TransferBlocked } from "./transfer-blocked";
 import { TransferLoadingOverlay } from "./transfer-loading";
 import { TransferOtp } from "./transfer-otp";
+import { TransferProcessing } from "./transfer-processing";
 import { TransferReceipt } from "./transfer-receipt";
-import { TxnAuthStep } from "./txn-auth-step";
+import { otpTriggerReason, useTransferPhases } from "./use-transfer-phases";
+import { useTransferRun } from "./use-transfer-run";
 import { useAccounts } from "@/hooks/useBanking";
 import { useAuth } from "@/lib/auth";
 import { formatNPR, maskAccount } from "@/lib/format";
 import { txnTypeForTransfer, txnTypeLabels } from "@/lib/trackb";
-import { commitTransfer } from "@/services/transferService";
-import type { FraudResult, Transaction, TransferRequest } from "@/types/banking";
+import { ApiError } from "@/services/http";
+import type { TransferRequest } from "@/types/banking";
 
 type Provider = "eSewa" | "Khalti";
 
@@ -36,7 +37,7 @@ const PROVIDERS: { id: Provider; logo: BrandLogoId }[] = [
 const providerLogo = (p: Provider): BrandLogoId =>
   p === "Khalti" ? "khalti" : "esewa";
 
-type Phase = "provider" | "form" | "otp" | "success" | "blocked";
+type Screen = "provider" | "form";
 
 export function WalletLoadFlow() {
   const router = useRouter();
@@ -47,7 +48,7 @@ export function WalletLoadFlow() {
 
   const initialProvider = params.get("provider");
 
-  const [phase, setPhase] = React.useState<Phase>(
+  const [screen, setScreen] = React.useState<Screen>(
     initialProvider ? "form" : "provider",
   );
   const [provider, setProvider] = React.useState<Provider>(
@@ -57,18 +58,18 @@ export function WalletLoadFlow() {
   const [amount, setAmount] = React.useState("");
   const [remarks, setRemarks] = React.useState("");
   const [reviewOpen, setReviewOpen] = React.useState(false);
-  const [authOpen, setAuthOpen] = React.useState(false);
   const [submitting, setSubmitting] = React.useState(false);
 
-  const [fraud, setFraud] = React.useState<FraudResult | null>(null);
-  const [committed, setCommitted] = React.useState<Transaction | null>(null);
+  const run = useTransferRun();
+  const { phase: pipelinePhase, committed } = useTransferPhases(run);
+  const phase = pipelinePhase === "form" ? screen : pipelinePhase;
 
   const amountNum = Number(amount) || 0;
   const txnType = txnTypeForTransfer("wallet", provider);
 
   const pickProvider = (p: Provider) => {
     setProvider(p);
-    setPhase("form");
+    setScreen("form");
   };
 
   const buildRequest = (): TransferRequest => ({
@@ -97,34 +98,20 @@ export function WalletLoadFlow() {
     setReviewOpen(true);
   };
 
-  const confirmReview = () => {
+  const confirmReview = async () => {
     setReviewOpen(false);
-    setAuthOpen(true);
-  };
-
-  const handleAuthSuccess = async () => {
-    setAuthOpen(false);
     setSubmitting(true);
     try {
-      const outcome = await runTransferPipeline(buildRequest());
-      setFraud(outcome.fraud);
-      if (outcome.kind === "blocked") setPhase("blocked");
-      else if (outcome.kind === "otp") setPhase("otp");
-      else {
-        setCommitted(outcome.txn);
-        setPhase("success");
-      }
-    } catch {
-      toast.error("Wallet load failed. Please try again.");
+      await run.start(buildRequest());
+    } catch (err) {
+      toast.error(
+        err instanceof ApiError
+          ? err.message
+          : "Wallet load failed. Please try again.",
+      );
     } finally {
       setSubmitting(false);
     }
-  };
-
-  const finalize = async (result: FraudResult) => {
-    const txn = await commitTransfer(buildRequest(), result);
-    setCommitted(txn);
-    setPhase("success");
   };
 
   if (!fromAccount) {
@@ -163,7 +150,7 @@ export function WalletLoadFlow() {
 
         {phase === "form" && (
           <motion.div key="form" initial={{ opacity: 0, x: 12 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0 }}>
-            <FlowHeader title="Wallet Load" onBack={() => setPhase("provider")} />
+            <FlowHeader title="Wallet Load" onBack={() => setScreen("provider")} />
 
             <div className="relative">
               <Card>
@@ -253,12 +240,22 @@ export function WalletLoadFlow() {
           </motion.div>
         )}
 
-        {phase === "otp" && fraud && (
+        {phase === "processing" && (
+          <motion.div key="processing" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+            <FlowHeader title="Wallet Load" onBack={() => undefined} />
+            <TransferProcessing amount={amountNum} recipient={`${provider} Wallet`} slow={run.timedOut} />
+          </motion.div>
+        )}
+
+        {phase === "otp" && run.txnId && (
           <motion.div key="otp" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
             <TransferOtp
+              txnId={run.txnId}
               amount={amountNum}
               recipient={`${provider} Wallet`}
-              onVerified={() => finalize(fraud)}
+              otp={run.status?.otp ?? null}
+              triggerReason={otpTriggerReason(run.status)}
+              onVerified={run.markVerified}
               onCancel={() => router.push("/dashboard")}
             />
           </motion.div>
@@ -270,9 +267,12 @@ export function WalletLoadFlow() {
           </motion.div>
         )}
 
-        {phase === "blocked" && fraud && (
+        {phase === "blocked" && (
           <motion.div key="blocked" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-            <TransferBlocked reference={fraud.reference} onDone={() => router.push("/dashboard")} />
+            <TransferBlocked
+              reference={run.status?.fraud?.reference ?? run.status?.txn?.reference ?? run.txnId ?? ""}
+              onDone={() => router.push("/dashboard")}
+            />
           </motion.div>
         )}
       </AnimatePresence>
@@ -290,13 +290,6 @@ export function WalletLoadFlow() {
         <ReviewRow label="Remarks" value={remarks || "—"} />
         <ReviewRow label="Amount" value={formatNPR(amountNum)} strong />
       </ReviewSheet>
-
-      <TxnAuthStep
-        open={authOpen}
-        amountLabel={`Loading ${formatNPR(amountNum)} to ${provider}`}
-        onSuccess={handleAuthSuccess}
-        onCancel={() => setAuthOpen(false)}
-      />
     </div>
   );
 }

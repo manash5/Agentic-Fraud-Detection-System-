@@ -174,7 +174,14 @@ def build_verdicts(outcomes: dict[str, AgentOutcome]) -> dict[str, AgentVerdict]
 
 def fuse(outcomes: dict[str, AgentOutcome],
          txn_type_raw: str) -> tuple[SynthesisResult, TransactionType, dict[str, AgentVerdict]]:
-    """Map the txn_type, build verdicts, and run the pure synthesis + decision."""
+    """Map the txn_type, build verdicts, and run the pure synthesis + decision.
+
+    Thresholds come from pipeline.decision_settings (admin-tunable via Redis,
+    defaults to the paper's constants), so both the API process and the
+    orchestrator pick up Settings changes within seconds.
+    """
+    from pipeline.decision_settings import current_config
+
     verdicts = build_verdicts(outcomes)
     mapped = map_txn_type(txn_type_raw)
     if not verdicts:
@@ -182,4 +189,4 @@ def fuse(outcomes: dict[str, AgentOutcome],
             "no fusion agent produced a verdict — "
             + "; ".join(f"{n}: {o.status}" for n, o in outcomes.items()
                         if n in FUSION_AGENTS))
-    return synthesise(verdicts, mapped), mapped, verdicts
+    return synthesise(verdicts, mapped, cfg=current_config()), mapped, verdicts

@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { motion } from "framer-motion";
 import {
+  ArrowLeftRight,
   ArrowRight,
   Globe,
   Grid3x3,
@@ -21,48 +22,99 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useAccounts, useTransactions } from "@/hooks/useBanking";
 import { useAuth } from "@/lib/auth";
 import { useBalanceVisibility } from "@/lib/balance-visibility";
+import { buildTransferPrefillHref } from "@/lib/transfer-prefill";
 import { formatNPR, maskAccount } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 const quickActions: {
+  id: string;
   label: string;
   logo?: BrandLogoId;
   icon?: LucideIcon;
-  action: (router: ReturnType<typeof useRouter>) => void;
+  action?: (router: ReturnType<typeof useRouter>) => void;
 }[] = [
   {
-    label: "Load Wallet",
-    logo: "esewa",
-    action: (router) => router.push("/transfer/wallet"),
+    id: "transfer",
+    label: "Transfer Money",
+    icon: ArrowLeftRight,
+    // handled specially — uses the logged-in profile's prefill transaction
   },
   {
+    id: "fixed",
     label: "Fixed Deposit",
     icon: PiggyBank,
     action: () => toast.info("Fixed Deposit application coming soon"),
   },
   {
+    id: "universe",
     label: "Digital Universe",
     icon: Globe,
     action: () => toast.info("Digital Universe coming soon"),
   },
   {
+    id: "hub",
     label: "View All",
     icon: Grid3x3,
     action: (router) => router.push("/hub"),
   },
 ];
 
-const favourites = [
-  { name: "Sabin K.", account: "1201020200112233" },
-  { name: "Nisha R.", account: "1201030300445566" },
-  { name: "eSewa", account: "9801234567", logo: "esewa" as const },
-  { name: "Khalti", account: "9807654321", logo: "khalti" as const },
-];
+interface Favourite {
+  name: string;
+  account: string;
+  logo?: BrandLogoId;
+}
+
+/** Most frequent debit counterparties from the user's real history.
+ * Deduped by name so generic placeholders (e.g. "Merchant") collapse to one
+ * entry and the derived list has unique names for React keys. */
+function deriveFavourites(
+  transactions: { counterparty: { name: string; accountNumber: string; bank: string } }[],
+): Favourite[] {
+  const counts = new Map<string, { fav: Favourite; n: number }>();
+  for (const t of transactions) {
+    const name = t.counterparty.name?.trim();
+    if (!name) continue;
+    const key = name.toLowerCase();
+    const entry = counts.get(key);
+    if (entry) entry.n += 1;
+    else
+      counts.set(key, {
+        n: 1,
+        fav: {
+          name,
+          account: t.counterparty.accountNumber,
+          logo:
+            t.counterparty.bank === "eSewa"
+              ? ("esewa" as const)
+              : t.counterparty.bank === "Khalti"
+                ? ("khalti" as const)
+                : undefined,
+        },
+      });
+  }
+  return [...counts.values()]
+    .sort((a, b) => b.n - a.n)
+    .slice(0, 4)
+    .map((e) => e.fav);
+}
 
 export function DashboardView() {
-  const { user } = useAuth();
+  const { user, profile } = useAuth();
   const router = useRouter();
   const { isVisible } = useBalanceVisibility();
+
+  const onQuickAction = (item: (typeof quickActions)[number]) => {
+    if (item.id === "transfer") {
+      if (profile) {
+        router.push(buildTransferPrefillHref(profile.prefill));
+      } else {
+        router.push("/transfer/bank");
+      }
+      return;
+    }
+    item.action?.(router);
+  };
   const { data: accounts, isLoading: accountsLoading } = useAccounts(
     user?.customerId,
   );
@@ -70,31 +122,59 @@ export function DashboardView() {
     customerId: user?.customerId,
     limit: 5,
   });
+  const { data: recentHistory } = useTransactions({
+    customerId: user?.customerId,
+    limit: 100,
+  });
 
   const savings = accounts?.find((a) => a.type === "savings");
+  const favourites = React.useMemo(
+    () => deriveFavourites(recentHistory ?? []),
+    [recentHistory],
+  );
 
   return (
     <div className="space-y-6">
       {/* Quick actions */}
       <div className="grid grid-cols-4 gap-3">
-        {quickActions.map((action) => (
-          <button
-            key={action.label}
-            onClick={() => action.action(router)}
-            className="group flex flex-col items-center gap-2 rounded-xl border bg-card p-3 text-center transition-all hover:border-primary/30 hover:shadow-sm sm:p-4"
-          >
-            <div className="flex h-11 w-11 items-center justify-center overflow-hidden rounded-full bg-primary/10 transition-colors group-hover:bg-primary/5">
-              {action.logo ? (
-                <BrandLogo id={action.logo} size={36} />
-              ) : action.icon ? (
-                <action.icon className="h-5 w-5 text-primary transition-colors group-hover:text-primary" />
-              ) : null}
-            </div>
-            <span className="text-[11px] font-medium leading-tight">
-              {action.label}
-            </span>
-          </button>
-        ))}
+        {quickActions.map((action) => {
+          const isTransfer = action.id === "transfer";
+          return (
+            <button
+              key={action.id}
+              onClick={() => onQuickAction(action)}
+              className={cn(
+                "group flex flex-col items-center gap-2 rounded-xl border p-3 text-center transition-all hover:shadow-sm sm:p-4",
+                isTransfer
+                  ? "border-primary/40 bg-primary/5 hover:border-primary"
+                  : "bg-card hover:border-primary/30",
+              )}
+            >
+              <div
+                className={cn(
+                  "flex h-11 w-11 items-center justify-center overflow-hidden rounded-full transition-colors",
+                  isTransfer
+                    ? "bg-primary text-primary-foreground"
+                    : "bg-primary/10 group-hover:bg-primary/5",
+                )}
+              >
+                {action.logo ? (
+                  <BrandLogo id={action.logo} size={36} />
+                ) : action.icon ? (
+                  <action.icon
+                    className={cn(
+                      "h-5 w-5",
+                      isTransfer ? "text-primary-foreground" : "text-primary",
+                    )}
+                  />
+                ) : null}
+              </div>
+              <span className="text-[11px] font-medium leading-tight">
+                {action.label}
+              </span>
+            </button>
+          );
+        })}
       </div>
 
       {/* Easy Balance card */}
@@ -168,15 +248,16 @@ export function DashboardView() {
             ))}
       </div>
 
-      {/* Favourites */}
+      {/* Favourites — the user's most frequent real counterparties */}
+      {favourites.length > 0 && (
       <div>
         <h2 className="mb-3 text-sm font-semibold text-muted-foreground">
-          Favourites
+          Frequent Payees
         </h2>
         <div className="no-scrollbar flex gap-4 overflow-x-auto pb-1">
-          {favourites.map((f) => (
+          {favourites.map((f, i) => (
             <button
-              key={f.name}
+              key={`${f.name}-${i}`}
               onClick={() =>
                 router.push(
                   `/transfer/bank?account=${encodeURIComponent(f.account)}&name=${encodeURIComponent(f.name)}`,
@@ -203,6 +284,7 @@ export function DashboardView() {
           ))}
         </div>
       </div>
+      )}
 
       {/* Easy History */}
       <Card>

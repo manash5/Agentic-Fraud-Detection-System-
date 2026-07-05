@@ -50,6 +50,10 @@ if str(BACKEND_DIR) not in sys.path:
 if "REDIS_HOST" in os.environ:
     os.environ.setdefault("FRAUD_REDIS_HOST", os.environ["REDIS_HOST"])
 
+# app.deps loads backend/.env — import it BEFORE anything that reads os.environ
+# at import time (kafka_bus.config, agent configs, EASYSENDSMS_*).
+from app import deps as app_deps  # noqa: E402
+
 from neo4j.exceptions import Neo4jError, ServiceUnavailable  # noqa: E402
 
 from agents.geo_agent import GeoAgent, PostgresUnavailableError  # noqa: E402
@@ -90,6 +94,14 @@ from synthesis_agent.api import router as synthesis_router  # noqa: E402
 from synthesis_agent.api import store as synthesis_store  # noqa: E402
 from synthesis_agent.txn_type_mapping import log_mapping_table  # noqa: E402
 
+from app.routers import admin as admin_router  # noqa: E402
+from app.routers import auth as auth_router  # noqa: E402
+from app.routers import banking as banking_router  # noqa: E402
+from app.routers import otp as otp_router  # noqa: E402
+from app.routers import transfers as transfers_router  # noqa: E402
+from app.routers import verdicts as verdicts_router  # noqa: E402
+from app.state_projector import run_state_projector  # noqa: E402
+
 logger = logging.getLogger("fraud-api")
 logging.basicConfig(level=logging.INFO)
 
@@ -98,7 +110,24 @@ app = FastAPI(
     version="1.0.0",
     description="Velocity + Geo + Graph + Behavior + Synthesis fraud agents behind one FastAPI app.",
 )
+
+from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=os.environ.get("CORS_ORIGINS", "http://localhost:3000").split(","),
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 app.include_router(synthesis_router)
+app.include_router(auth_router.router)
+app.include_router(banking_router.router)
+app.include_router(transfers_router.router)
+app.include_router(otp_router.router)
+app.include_router(verdicts_router.router)
+app.include_router(admin_router.router)
 
 # Agents are created eagerly (cheap) and connected on startup.
 velocity_agent = VelocityAgent()
@@ -108,6 +137,12 @@ event_producer = EventProducer()
 app.state.graph_driver = None
 app.state.behavior_model_error = None
 app.state.kafka_ready = False
+# Shared with the new routers (system health probes + transfer submission).
+app.state.velocity_agent = velocity_agent
+app.state.geo_agent = geo_agent
+app.state.behavior_agent = behavior_agent
+app.state.app_event_producer = None
+app.state.projector_task = None
 
 
 @app.on_event("startup")
@@ -142,17 +177,38 @@ async def startup() -> None:
     try:
         await event_producer.start()
         app.state.kafka_ready = True
+        app.state.app_event_producer = event_producer
         logger.info("✅ Kafka producer ready (topic 'fraud-events')")
     except Exception as exc:  # noqa: BLE001 — /pipeline/submit reports 503 instead
         logger.warning("Kafka producer could not connect at startup: %s", exc)
     logger.info("✅ Velocity Agent ready (Redis, lazy connect)")
+    try:
+        await app_deps.app_db.connect()
+        logger.info("✅ App DB ready (app_* tables ensured)")
+    except Exception as exc:  # noqa: BLE001 — app endpoints report 503 instead
+        logger.warning("App DB could not connect at startup: %s", exc)
+    try:
+        await app_deps.redis_client.ping()
+        logger.info("✅ App Redis ready (sessions / OTP / txn state)")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("App Redis unavailable at startup: %s", exc)
+    app.state.projector_task = asyncio.create_task(run_state_projector())
+    logger.info("✅ State projector consuming fraud-events (group fraud-state-projector)")
 
 
 @app.on_event("shutdown")
 async def shutdown() -> None:
+    if app.state.projector_task is not None:
+        app.state.projector_task.cancel()
+        try:
+            await app.state.projector_task
+        except asyncio.CancelledError:
+            pass
     await geo_agent.close()
     await behavior_agent.close()
     await synthesis_store.close()
+    await app_deps.app_db.close()
+    await app_deps.redis_client.aclose()
     if app.state.kafka_ready:
         await event_producer.stop()
     if app.state.graph_driver is not None:

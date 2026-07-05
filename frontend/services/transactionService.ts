@@ -1,6 +1,5 @@
 import type { Transaction, TransactionType } from "@/types/banking";
-import { db } from "@/mock/db";
-import { mockRequest } from "./http";
+import { request } from "./http";
 
 export interface TransactionFilters {
   customerId?: string;
@@ -18,44 +17,22 @@ export interface TransactionFilters {
 export function getTransactions(
   filters: TransactionFilters = {},
 ): Promise<Transaction[]> {
-  return mockRequest(() => {
-    let rows = [...db.transactions];
-    if (filters.customerId)
-      rows = rows.filter((t) => t.customerId === filters.customerId);
-    if (filters.type && filters.type !== "all")
-      rows = rows.filter((t) => t.type === filters.type);
-    if (filters.decision && filters.decision !== "all")
-      rows = rows.filter((t) => t.decision === filters.decision);
-    if (filters.from)
-      rows = rows.filter(
-        (t) => new Date(t.timestamp) >= new Date(filters.from!),
-      );
-    if (filters.to)
-      rows = rows.filter(
-        (t) => new Date(t.timestamp) <= new Date(filters.to!),
-      );
-    if (typeof filters.minAmount === "number")
-      rows = rows.filter((t) => t.amount >= filters.minAmount!);
-    if (typeof filters.maxAmount === "number")
-      rows = rows.filter((t) => t.amount <= filters.maxAmount!);
-    if (filters.search) {
-      const q = filters.search.toLowerCase();
-      rows = rows.filter(
-        (t) =>
-          t.reference.toLowerCase().includes(q) ||
-          t.id.toLowerCase().includes(q) ||
-          t.counterparty.name.toLowerCase().includes(q) ||
-          t.customerName.toLowerCase().includes(q),
-      );
-    }
-    return filters.limit ? rows.slice(0, filters.limit) : rows;
+  return request<Transaction[]>("/transactions", {
+    params: {
+      customerId: filters.customerId,
+      search: filters.search,
+      type: filters.type,
+      decision: filters.decision,
+      from: filters.from,
+      to: filters.to,
+      minAmount: filters.minAmount,
+      maxAmount: filters.maxAmount,
+      limit: filters.limit,
+    },
   });
 }
 
 /** GET /transactions/:id */
-export function getTransaction(id: string): Promise<Transaction | undefined> {
-  return mockRequest(() => db.transactions.find((t) => t.id === id), {
-    min: 300,
-    max: 700,
-  });
+export function getTransaction(id: string): Promise<Transaction> {
+  return request<Transaction>(`/transactions/${encodeURIComponent(id)}`);
 }

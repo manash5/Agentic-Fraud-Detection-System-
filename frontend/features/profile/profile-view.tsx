@@ -14,14 +14,18 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import { useAccounts, useCustomer } from "@/hooks/useBanking";
+import { useAccounts, useCustomer, useTransactions } from "@/hooks/useBanking";
 import { useAuth } from "@/lib/auth";
-import { formatDate, formatNPR, initials } from "@/lib/format";
+import { formatDate, formatNPR, initials, relativeTime } from "@/lib/format";
 
 export function ProfileView() {
   const { user } = useAuth();
   const { data: customer, isLoading } = useCustomer(user?.customerId);
   const { data: accounts } = useAccounts(user?.customerId);
+  const { data: history } = useTransactions({
+    customerId: user?.customerId,
+    limit: 100,
+  });
 
   if (isLoading || !customer) {
     return (
@@ -32,10 +36,17 @@ export function ProfileView() {
     );
   }
 
-  const devices = [
-    { name: "iPhone 13", location: "Kathmandu", last: "Active now" },
-    { name: "Web · Chrome", location: "Kathmandu", last: "2 hours ago" },
-  ];
+  // Real devices observed on the account, from transaction history.
+  const seen = new Map<string, { name: string; location: string; last: string }>();
+  for (const t of history ?? []) {
+    if (!t.deviceId || seen.has(t.deviceId)) continue;
+    seen.set(t.deviceId, {
+      name: t.deviceId,
+      location: t.location.city,
+      last: relativeTime(t.timestamp),
+    });
+  }
+  const devices = [...seen.values()].slice(0, 4);
 
   return (
     <div className="space-y-5">

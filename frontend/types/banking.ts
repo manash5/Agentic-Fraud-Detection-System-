@@ -144,6 +144,8 @@ export interface Transaction {
   reference: string;
   customerId: string;
   customerName: string;
+  /** Agent-space account id (ACC-*) the fraud pipeline scores on. */
+  accountId?: string;
   accountNumber: string;
   counterparty: Counterparty;
   amount: number;
@@ -159,7 +161,8 @@ export interface Transaction {
   ipAddress: string;
   remarks: string;
   timestamp: string;
-  fraud: FraudAnalysis;
+  /** Full pipeline analysis; null for transactions that predate the live pipeline. */
+  fraud: FraudAnalysis | null;
 
   // Track B hackathon fields (§4–§8 of the data manual), populated for every
   // generated / seeded / committed transaction. See lib/trackb.ts for

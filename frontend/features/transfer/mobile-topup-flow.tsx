@@ -13,18 +13,19 @@ import { BrandLogo, type BrandLogoId } from "@/components/shared/brand-logo";
 import { AmountChips } from "./amount-chips";
 import { FlowHeader } from "./flow-header";
 import { ReviewRow, ReviewSheet } from "./review-sheet";
-import { runTransferPipeline } from "./run-transfer-pipeline";
 import { TransferBlocked } from "./transfer-blocked";
 import { TransferLoadingOverlay } from "./transfer-loading";
 import { TransferOtp } from "./transfer-otp";
+import { TransferProcessing } from "./transfer-processing";
 import { TransferReceipt } from "./transfer-receipt";
-import { TxnAuthStep } from "./txn-auth-step";
+import { otpTriggerReason, useTransferPhases } from "./use-transfer-phases";
+import { useTransferRun } from "./use-transfer-run";
 import { useAccounts } from "@/hooks/useBanking";
 import { useAuth } from "@/lib/auth";
 import { formatNPR, maskAccount } from "@/lib/format";
 import { txnTypeLabels } from "@/lib/trackb";
-import { commitTransfer } from "@/services/transferService";
-import type { FraudResult, Transaction, TransferRequest } from "@/types/banking";
+import { ApiError } from "@/services/http";
+import type { TransferRequest } from "@/types/banking";
 
 type Operator = "NTC" | "Ncell";
 
@@ -42,7 +43,7 @@ const operatorLogo = (op: Operator): BrandLogoId => {
   return "ntc";
 };
 
-type Phase = "operator" | "form" | "otp" | "success" | "blocked";
+type Screen = "operator" | "form";
 
 export function MobileTopupFlow() {
   const router = useRouter();
@@ -50,24 +51,24 @@ export function MobileTopupFlow() {
   const { data: accounts } = useAccounts(user?.customerId);
   const fromAccount = accounts?.find((a) => a.type === "savings");
 
-  const [phase, setPhase] = React.useState<Phase>("operator");
+  const [screen, setScreen] = React.useState<Screen>("operator");
   const [operator, setOperator] = React.useState<Operator>("NTC");
   const [mobile, setMobile] = React.useState(user?.mobile ?? "");
   const [amount, setAmount] = React.useState("");
   const [remarks, setRemarks] = React.useState("");
   const [reviewOpen, setReviewOpen] = React.useState(false);
-  const [authOpen, setAuthOpen] = React.useState(false);
   const [submitting, setSubmitting] = React.useState(false);
 
-  const [fraud, setFraud] = React.useState<FraudResult | null>(null);
-  const [committed, setCommitted] = React.useState<Transaction | null>(null);
+  const run = useTransferRun();
+  const { phase: pipelinePhase, committed } = useTransferPhases(run);
+  const phase = pipelinePhase === "form" ? screen : pipelinePhase;
 
   const amountNum = Number(amount) || 0;
   const txnTypeLabel = txnTypeLabels.MOBILE_TOPUP;
 
   const pickOperator = (op: Operator) => {
     setOperator(op);
-    setPhase("form");
+    setScreen("form");
   };
 
   const buildRequest = (): TransferRequest => ({
@@ -97,29 +98,18 @@ export function MobileTopupFlow() {
     setReviewOpen(true);
   };
 
-  const handleAuthSuccess = async () => {
-    setAuthOpen(false);
+  const confirmReview = async () => {
+    setReviewOpen(false);
     setSubmitting(true);
     try {
-      const outcome = await runTransferPipeline(buildRequest());
-      setFraud(outcome.fraud);
-      if (outcome.kind === "blocked") setPhase("blocked");
-      else if (outcome.kind === "otp") setPhase("otp");
-      else {
-        setCommitted(outcome.txn);
-        setPhase("success");
-      }
-    } catch {
-      toast.error("Top-up failed. Please try again.");
+      await run.start(buildRequest());
+    } catch (err) {
+      toast.error(
+        err instanceof ApiError ? err.message : "Top-up failed. Please try again.",
+      );
     } finally {
       setSubmitting(false);
     }
-  };
-
-  const finalize = async (result: FraudResult) => {
-    const txn = await commitTransfer(buildRequest(), result);
-    setCommitted(txn);
-    setPhase("success");
   };
 
   if (!fromAccount) {
@@ -160,7 +150,7 @@ export function MobileTopupFlow() {
 
         {phase === "form" && (
           <motion.div key="form" initial={{ opacity: 0, x: 12 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0 }}>
-            <FlowHeader title="Mobile Top-up" onBack={() => setPhase("operator")} />
+            <FlowHeader title="Mobile Top-up" onBack={() => setScreen("operator")} />
 
             <div className="relative">
             <Card>
@@ -235,12 +225,22 @@ export function MobileTopupFlow() {
           </motion.div>
         )}
 
-        {phase === "otp" && fraud && (
+        {phase === "processing" && (
+          <motion.div key="processing" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+            <FlowHeader title="Mobile Top-up" onBack={() => undefined} />
+            <TransferProcessing amount={amountNum} recipient={`${operator} · ${mobile}`} slow={run.timedOut} />
+          </motion.div>
+        )}
+
+        {phase === "otp" && run.txnId && (
           <motion.div key="otp" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
             <TransferOtp
+              txnId={run.txnId}
               amount={amountNum}
               recipient={`${operator} · ${mobile}`}
-              onVerified={() => finalize(fraud)}
+              otp={run.status?.otp ?? null}
+              triggerReason={otpTriggerReason(run.status)}
+              onVerified={run.markVerified}
               onCancel={() => router.push("/dashboard")}
             />
           </motion.div>
@@ -252,9 +252,12 @@ export function MobileTopupFlow() {
           </motion.div>
         )}
 
-        {phase === "blocked" && fraud && (
+        {phase === "blocked" && (
           <motion.div key="blocked" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-            <TransferBlocked reference={fraud.reference} onDone={() => router.push("/dashboard")} />
+            <TransferBlocked
+              reference={run.status?.fraud?.reference ?? run.status?.txn?.reference ?? run.txnId ?? ""}
+              onDone={() => router.push("/dashboard")}
+            />
           </motion.div>
         )}
       </AnimatePresence>
@@ -263,10 +266,7 @@ export function MobileTopupFlow() {
         open={reviewOpen}
         onOpenChange={setReviewOpen}
         confirmLabel="Confirm & Recharge"
-        onConfirm={() => {
-          setReviewOpen(false);
-          setAuthOpen(true);
-        }}
+        onConfirm={confirmReview}
       >
         <ReviewRow label="From" value={`${fromAccount.name} · ${maskAccount(fromAccount.accountNumber)}`} />
         <ReviewRow label="Operator" value={operator} />
@@ -275,13 +275,6 @@ export function MobileTopupFlow() {
         <ReviewRow label="Remarks" value={remarks || "—"} />
         <ReviewRow label="Amount" value={formatNPR(amountNum)} strong />
       </ReviewSheet>
-
-      <TxnAuthStep
-        open={authOpen}
-        amountLabel={`Recharging ${formatNPR(amountNum)} for ${mobile}`}
-        onSuccess={handleAuthSuccess}
-        onCancel={() => setAuthOpen(false)}
-      />
     </div>
   );
 }

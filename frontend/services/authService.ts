@@ -1,36 +1,74 @@
 import type { AuthUser } from "@/types/banking";
-import { db, DEMO_CREDENTIALS } from "@/mock/db";
-import { ApiError, mockRequest } from "./http";
+import { setAuthSession, type DemoProfile } from "@/lib/auth";
+import { request } from "./http";
 
-function demoUser(): AuthUser {
-  const customer = db.customers.find((c) => c.id === db.demoCustomerId)!;
-  return {
-    customerId: customer.id,
-    name: customer.name,
-    accountNumber: customer.accountNumber,
-    mobile: customer.mobile,
-  };
+interface LoginResponse {
+  token: string;
+  user: AuthUser;
 }
 
-/**
- * POST /auth/login-mpin — phone number + 4-digit mPIN, mirroring Global
- * IME's mobile unlock flow (no separate OTP step once the device is trusted).
- */
-export function loginWithMpin(mobile: string, mpin: string): Promise<AuthUser> {
-  return mockRequest(
-    () => {
-      const matches =
-        mobile.trim() === DEMO_CREDENTIALS.mobile && mpin === DEMO_CREDENTIALS.mpin;
-      if (!matches) {
-        throw new ApiError("Incorrect mobile number or mPIN.", 401);
-      }
-      return demoUser();
-    },
-    { min: 500, max: 1100 },
+interface ProfileLoginResponse extends LoginResponse {
+  profile: DemoProfile;
+}
+
+/** GET /auth/demo-profiles — the fixed profiles for the login picker. */
+export function getDemoProfiles(): Promise<DemoProfile[]> {
+  return request<DemoProfile[]>("/auth/demo-profiles");
+}
+
+/** POST /auth/login-profile — one-click demo login; stores session + prefill. */
+export async function loginWithProfile(profileId: string): Promise<DemoProfile> {
+  const { token, user, profile } = await request<ProfileLoginResponse>(
+    "/auth/login-profile",
+    { method: "POST", body: { profileId } },
   );
+  setAuthSession({ token, user, profile });
+  return profile;
 }
 
-/** POST /auth/login-biometric — Face ID / fingerprint mock unlock. */
-export function loginWithBiometric(): Promise<AuthUser> {
-  return mockRequest(() => demoUser(), { min: 900, max: 1500 });
+/** POST /auth/login-mpin — mobile + 4-digit mPIN; stores the session token. */
+export async function loginWithMpin(
+  mobile: string,
+  mpin: string,
+): Promise<AuthUser> {
+  const { token, user } = await request<LoginResponse>("/auth/login-mpin", {
+    method: "POST",
+    body: { mobile: mobile.trim(), mpin },
+  });
+  setAuthSession({ token, user });
+  return user;
+}
+
+/** POST /auth/login-biometric — trusted-device unlock for a registered mobile. */
+export async function loginWithBiometric(mobile: string): Promise<AuthUser> {
+  const { token, user } = await request<LoginResponse>(
+    "/auth/login-biometric",
+    { method: "POST", body: { mobile: mobile.trim() } },
+  );
+  setAuthSession({ token, user });
+  return user;
+}
+
+/** GET /auth/customer-preview — registered name for the login screen. */
+export function getCustomerPreview(mobile: string): Promise<{ name: string }> {
+  return request<{ name: string }>("/auth/customer-preview", {
+    params: { mobile: mobile.trim() },
+  });
+}
+
+/** POST /auth/verify-mpin — transfer-time re-authentication. */
+export function verifyMpin(mpin: string): Promise<{ verified: boolean }> {
+  return request<{ verified: boolean }>("/auth/verify-mpin", {
+    method: "POST",
+    body: { mpin },
+  });
+}
+
+/** POST /auth/logout — invalidates the Redis session. */
+export async function logout(): Promise<void> {
+  try {
+    await request<{ ok: boolean }>("/auth/logout", { method: "POST" });
+  } finally {
+    setAuthSession(null);
+  }
 }

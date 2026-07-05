@@ -130,7 +130,24 @@ export function formatAccountId(seq: number): string {
  * admin audit tab and the hackathon submission export.
  */
 export function toModelVerdict(txn: Transaction): ModelVerdict {
-  const { fraud } = txn;
+  // Pre-pipeline transactions carry no analysis; fall back to the row's
+  // decision/risk so exports and audit views stay total.
+  const fraud = txn.fraud ?? {
+    agents: [],
+    synthesis: {
+      finalRisk: txn.riskScore,
+      confidence: 0,
+      pattern: "none" as const,
+      fraudType: txn.fraudType,
+      decision: txn.decision,
+      weights: { velocity: 0, geo: 0, behavior: 0, graph: 0 },
+      disagreement: 0,
+      inferenceMs: txn.latencyMs,
+    },
+    shap: [],
+    baselineDecision: txn.decision,
+    baselineCorrect: true,
+  };
   const agentVerdicts = fraud.agents.map((a) => ({
     agent: a.agent as AgentName,
     score: a.risk,

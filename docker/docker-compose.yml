@@ -1,0 +1,235 @@
+# =============================================================================
+# Full-stack fraud-detection system.
+#
+# HOST-EXPOSED PORTS: exactly 2
+#   - frontend  -> 3000   (Next.js server)
+#   - backend   -> 8000   (FastAPI agents API + state projector)
+#
+# INTERNAL ONLY (no `ports:` — reachable only by other containers on fraud_net):
+#   - postgres  (5432)   application + agent reference data
+#   - redis     (6379)   velocity/geo caches, sessions, OTP, txn workflow state
+#   - neo4j     (7687)   graph agent's account network  [required by the agents]
+#   - kafka     (9092)   async pipeline event bus        [required by the agents]
+#   - orchestrator       Kafka consumer that runs the agent pipeline (no port)
+#
+# NOTE: the task named Postgres + Redis; the backend's agents ALSO depend on
+# Neo4j (graph agent) and Kafka (the orchestrator that drives the async
+# pipeline). They are included here as INTERNAL-ONLY services so the stack
+# actually processes transactions end-to-end, while preserving the
+# exactly-two-host-ports rule.
+#
+# Run:    docker compose -f docker/docker-compose.yml up --build
+# Reset:  docker compose -f docker/docker-compose.yml down -v   (drops volumes)
+# =============================================================================
+
+name: fraud-detection
+
+networks:
+  fraud_net:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
+  neo4j_data:
+
+services:
+  # ---------------------------------------------------------------------------
+  # Postgres — INTERNAL ONLY. Schema auto-created from init.sql on first boot.
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-fraud_detection_global}
+      POSTGRES_USER: ${POSTGRES_USER:-fraud}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in docker/.env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    networks:
+      - fraud_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-fraud} -d ${POSTGRES_DB:-fraud_detection_global}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    # NO ports: — never reachable from the host.
+
+  # ---------------------------------------------------------------------------
+  # Redis — INTERNAL ONLY. Persistence on (appendonly) so sessions/OTP survive
+  # a restart; velocity windows are ephemeral caches that rebuild regardless.
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    networks:
+      - fraud_net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    # NO ports: — never reachable from the host.
+
+  # ---------------------------------------------------------------------------
+  # Neo4j — INTERNAL ONLY. Graph agent's account-network store.
+  # ---------------------------------------------------------------------------
+  neo4j:
+    image: neo4j:5-community
+    restart: unless-stopped
+    environment:
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:?set NEO4J_PASSWORD in docker/.env}
+      NEO4J_server_memory_heap_max__size: 512m
+    volumes:
+      - neo4j_data:/data
+    networks:
+      - fraud_net
+    healthcheck:
+      # Password is substituted by compose from docker/.env at config time
+      # (single $), so it's a literal inside the container — the neo4j container
+      # itself doesn't carry a NEO4J_PASSWORD env var.
+      test: ["CMD-SHELL", "cypher-shell -u neo4j -p '${NEO4J_PASSWORD}' 'RETURN 1' || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 8
+      start_period: 40s
+    # NO ports: — never reachable from the host.
+
+  # ---------------------------------------------------------------------------
+  # Kafka (KRaft, single node, no Zookeeper) — INTERNAL ONLY. Async event bus.
+  # ---------------------------------------------------------------------------
+  kafka:
+    image: apache/kafka:3.9.0
+    restart: unless-stopped
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    networks:
+      - fraud_net
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 8
+      start_period: 25s
+    # NO ports: — never reachable from the host. (Ephemeral: no data volume.)
+
+  # ---------------------------------------------------------------------------
+  # Backend API + state projector — HOST-EXPOSED on 8000.
+  # ---------------------------------------------------------------------------
+  backend:
+    build:
+      context: ..
+      dockerfile: docker/backend.Dockerfile
+    image: fraud-detection-backend
+    restart: unless-stopped
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      neo4j: { condition: service_healthy }
+      kafka: { condition: service_healthy }
+    environment:
+      # --- datastores: SERVICE NAMES, never localhost -----------------------
+      FRAUD_DB_DSN: postgresql://${POSTGRES_USER:-fraud}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-fraud_detection_global}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-fraud}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-fraud_detection_global}
+      FRAUD_REDIS_HOST: redis
+      FRAUD_REDIS_PORT: "6379"
+      REDIS_URL: redis://redis:6379
+      FRAUD_KAFKA_BOOTSTRAP: kafka:9092
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USERNAME: neo4j
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD}
+      NEO4J_DATABASE: neo4j
+      # --- app config -------------------------------------------------------
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+      OTP_DEV_MODE: ${OTP_DEV_MODE:-1}
+      EASYSENDSMS_API_KEY: ${EASYSENDSMS_API_KEY:-}
+      EASYSENDSMS_SENDER: ${EASYSENDSMS_SENDER:-GIMEBANK}
+      DEMO_USER_MOBILE: ${DEMO_USER_MOBILE:-9801234567}
+      SESSION_TTL_SECONDS: ${SESSION_TTL_SECONDS:-86400}
+      TXN_LOG_PATH: /app/transactions_logs.json
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    networks:
+      - fraud_net
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"   # <-- host-exposed port #1
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 60s
+
+  # ---------------------------------------------------------------------------
+  # Kafka orchestrator — INTERNAL ONLY (same image, different command).
+  # Consumes fraud-events and runs the agent pipeline.
+  # ---------------------------------------------------------------------------
+  orchestrator:
+    image: fraud-detection-backend
+    restart: unless-stopped
+    depends_on:
+      backend: { condition: service_started }
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      neo4j: { condition: service_healthy }
+      kafka: { condition: service_healthy }
+    environment:
+      FRAUD_DB_DSN: postgresql://${POSTGRES_USER:-fraud}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-fraud_detection_global}
+      FRAUD_REDIS_HOST: redis
+      FRAUD_REDIS_PORT: "6379"
+      FRAUD_KAFKA_BOOTSTRAP: kafka:9092
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USERNAME: neo4j
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD}
+      NEO4J_DATABASE: neo4j
+      OTP_DEV_MODE: ${OTP_DEV_MODE:-1}
+    command: ["python", "-m", "kafka_bus.orchestrator"]
+    networks:
+      - fraud_net
+    # NO ports: — never reachable from the host.
+
+  # ---------------------------------------------------------------------------
+  # Frontend — HOST-EXPOSED on 3000. Proxies /api/* to the backend service.
+  # ---------------------------------------------------------------------------
+  frontend:
+    build:
+      context: ..
+      dockerfile: docker/frontend.Dockerfile
+      args:
+        # Baked into the Next.js rewrite at build time -> the backend service.
+        BACKEND_INTERNAL_URL: http://backend:8000
+    image: fraud-detection-frontend
+    restart: unless-stopped
+    depends_on:
+      backend: { condition: service_healthy }
+    environment:
+      # Server-side rewrite target (also read at runtime by next.config.ts).
+      BACKEND_INTERNAL_URL: http://backend:8000
+      NODE_ENV: production
+    networks:
+      - fraud_net
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"  # <-- host-exposed port #2
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:3000/login || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
